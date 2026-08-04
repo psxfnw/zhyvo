@@ -41,6 +41,7 @@ const guestAuth = await json('/auth/anonymous', {
   method: 'POST',
   body: JSON.stringify({ display_name: 'E2E Guest', client_type: 'web' }),
 })
+let cleanupAuth = auth
 await json(`/rooms/${slug}/join`, {
   method: 'POST',
   headers: { Authorization: `Bearer ${guestAuth.access_token}` },
@@ -74,6 +75,12 @@ try {
   const shareDialog = page.getByRole('dialog', { name: 'Запросити друзів' })
   await shareDialog.waitFor()
   if (await shareDialog.locator('.qr-wrap > svg').count() !== 1) throw new Error('QR code was not rendered')
+  const expectedInviteURL = `https://t.me/zhyvoappbot?startapp=room_${slug}`
+  const qrInviteURL = await shareDialog.locator('.qr-wrap > svg').getAttribute('data-invite-url')
+  if (qrInviteURL !== expectedInviteURL) throw new Error(`Unexpected QR invite URL: ${qrInviteURL}`)
+  await shareDialog.getByRole('button', { name: 'Надіслати в Telegram' }).waitFor()
+  const browserInviteURL = await shareDialog.getByRole('link', { name: 'Відкрити кімнату у браузері' }).getAttribute('href')
+  if (browserInviteURL !== `${baseURL}/r/${slug}`) throw new Error(`Unexpected browser invite URL: ${browserInviteURL}`)
   await page.screenshot({ path: resolve(artifacts, 'share-375.png'), fullPage: true })
   await shareDialog.getByRole('button', { name: 'Закрити' }).click()
 
@@ -92,9 +99,11 @@ try {
     .filter((box) => box.width < 44 || box.height < 44))
   if (settingsTargets.length) throw new Error(`Settings touch targets below 44px: ${JSON.stringify(settingsTargets)}`)
   await settingsDialog.getByRole('button', { name: 'Переглянути' }).click()
-  const membersDialog = page.getByRole('dialog', { name: 'Учасники' })
+  const membersDialog = page.getByRole('dialog', { name: 'Керування кімнатою' })
   await membersDialog.waitFor()
   await membersDialog.getByText('E2E Guest').waitFor()
+  await membersDialog.getByRole('tab', { name: 'Історія' }).click()
+  await membersDialog.getByText(/приєднався/).first().waitFor()
   await membersDialog.getByRole('button', { name: 'Закрити' }).click()
 
   const viewportChecks = [
@@ -146,12 +155,43 @@ try {
   }
   await page.screenshot({ path: resolve(artifacts, 'home-telegram-dark-375.png'), fullPage: true })
 
+  await json(`/rooms/${slug}/members/${guestAuth.identity.id}`, {
+    method: 'DELETE', headers: { Authorization: `Bearer ${auth.access_token}` },
+  })
+  const blocked = await json(`/rooms/${slug}/members`, { headers: { Authorization: `Bearer ${auth.access_token}` } })
+  if (!blocked.blocked_members.some((member) => member.id === guestAuth.identity.id)) throw new Error('Removed member was not blocked')
+  const blockedJoin = await fetch(`${baseURL}/api/v1/rooms/${slug}/join`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${guestAuth.access_token}` },
+    body: JSON.stringify({}),
+  })
+  if (blockedJoin.status !== 403) throw new Error(`Blocked member rejoined with status ${blockedJoin.status}`)
+  await json(`/rooms/${slug}/blocked-members/${guestAuth.identity.id}`, {
+    method: 'DELETE', headers: { Authorization: `Bearer ${auth.access_token}` },
+  })
+  await json(`/rooms/${slug}/join`, {
+    method: 'POST', headers: { Authorization: `Bearer ${guestAuth.access_token}` }, body: JSON.stringify({}),
+  })
+  const transferred = await json(`/rooms/${slug}/ownership`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${auth.access_token}` },
+    body: JSON.stringify({ identity_id: guestAuth.identity.id }),
+  })
+  if (transferred.room.role !== 'member') throw new Error('Previous owner did not become a member')
+  const newOwnerRoom = await json(`/rooms/${slug}`, { headers: { Authorization: `Bearer ${guestAuth.access_token}` } })
+  if (newOwnerRoom.room.role !== 'owner') throw new Error('Ownership was not transferred')
+  const roomActivity = await json(`/rooms/${slug}/activity`, { headers: { Authorization: `Bearer ${guestAuth.access_token}` } })
+  for (const eventType of ['member_removed', 'member_unblocked', 'ownership_transferred']) {
+    if (!roomActivity.events.some((event) => event.type === eventType)) throw new Error(`Missing ${eventType} activity event`)
+  }
+  cleanupAuth = guestAuth
+
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, upload: true, viewer: true, myRooms: true, members: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, upload: true, viewer: true, myRooms: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()
-  await json(`/rooms/${slug}`, { method: 'DELETE', headers: { Authorization: `Bearer ${auth.access_token}` } }).catch(() => undefined)
+  await json(`/rooms/${slug}`, { method: 'DELETE', headers: { Authorization: `Bearer ${cleanupAuth.access_token}` } }).catch(() => undefined)
   await json('/auth/session', { method: 'DELETE', headers: { Authorization: `Bearer ${auth.access_token}` } }).catch(() => undefined)
   await json('/auth/session', { method: 'DELETE', headers: { Authorization: `Bearer ${guestAuth.access_token}` } }).catch(() => undefined)
 }

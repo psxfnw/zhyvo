@@ -46,6 +46,22 @@ export interface RoomMember {
   last_seen_at: string
 }
 
+export interface BlockedRoomMember {
+  id: string
+  display_name: string
+  blocked_at: string
+}
+
+export interface RoomActivityEvent {
+  id: string
+  type: 'room_created' | 'member_joined' | 'member_removed' | 'member_unblocked' | 'ownership_transferred' | 'room_updated'
+  actor_id: string
+  actor_display_name: string
+  subject_id?: string
+  subject_display_name?: string
+  created_at: string
+}
+
 export interface GalleryItem {
   id: string
   media_type: 'image' | 'video'

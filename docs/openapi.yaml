@@ -269,14 +269,104 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [members]
+                required: [members, blocked_members]
                 properties:
                   members:
                     type: array
                     items: {$ref: '#/components/schemas/RoomMember'}
+                  blocked_members:
+                    type: array
+                    items: {$ref: '#/components/schemas/BlockedRoomMember'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '410': {$ref: '#/components/responses/Gone'}
+
+  /rooms/{slug}/members/{identityID}:
+    delete:
+      operationId: removeRoomMember
+      tags: [Rooms]
+      summary: Remove and block a participant as the owner
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - name: identityID
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '204': {description: Participant removed and blocked}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /rooms/{slug}/blocked-members/{identityID}:
+    delete:
+      operationId: unblockRoomMember
+      tags: [Rooms]
+      summary: Allow a blocked participant to join again
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - name: identityID
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '204': {description: Participant unblocked}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /rooms/{slug}/ownership:
+    post:
+      operationId: transferRoomOwnership
+      tags: [Rooms]
+      summary: Transfer room ownership to an active participant
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [identity_id]
+              properties:
+                identity_id: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Ownership transferred; the caller is now a member
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [room]
+                properties:
+                  room: {$ref: '#/components/schemas/Room'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /rooms/{slug}/activity:
+    get:
+      operationId: listRoomActivity
+      tags: [Rooms]
+      summary: List the latest room activity as the owner
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      responses:
+        '200':
+          description: Up to 100 latest events in reverse chronological order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items: {$ref: '#/components/schemas/RoomActivityEvent'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
 
   /rooms/{slug}/uploads:
     post:
@@ -472,6 +562,9 @@ components:
       schema: {type: string, format: uuid}
 
   responses:
+    BadRequest:
+      description: Request path or JSON body is invalid
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
     Unauthorized:
       description: Authentication is missing, invalid, expired, or revoked
       content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
@@ -621,6 +714,28 @@ components:
         role: {type: string, enum: [owner, member]}
         joined_at: {type: string, format: date-time}
         last_seen_at: {type: string, format: date-time}
+
+    BlockedRoomMember:
+      type: object
+      required: [id, display_name, blocked_at]
+      properties:
+        id: {type: string, format: uuid}
+        display_name: {type: string}
+        blocked_at: {type: string, format: date-time}
+
+    RoomActivityEvent:
+      type: object
+      required: [id, type, actor_id, actor_display_name, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        type:
+          type: string
+          enum: [room_created, member_joined, member_removed, member_unblocked, ownership_transferred, room_updated]
+        actor_id: {type: string, format: uuid}
+        actor_display_name: {type: string}
+        subject_id: {type: string, format: uuid}
+        subject_display_name: {type: string}
+        created_at: {type: string, format: date-time}
 
     InitiateUploadRequest:
       type: object

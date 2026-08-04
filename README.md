@@ -39,6 +39,10 @@ GET    /api/v1/rooms/{slug}/preview
 POST   /api/v1/rooms/{slug}/join
 GET    /api/v1/rooms/{slug}
 GET    /api/v1/rooms/{slug}/members
+DELETE /api/v1/rooms/{slug}/members/{identityID}
+DELETE /api/v1/rooms/{slug}/blocked-members/{identityID}
+POST   /api/v1/rooms/{slug}/ownership
+GET    /api/v1/rooms/{slug}/activity
 PATCH  /api/v1/rooms/{slug}
 DELETE /api/v1/rooms/{slug}
 POST   /api/v1/rooms/{slug}/uploads
@@ -72,7 +76,7 @@ npm run dev
 
 Vite відкриється на `http://localhost:5173` і сам проксіюватиме `/api` до backend.
 
-Браузерний smoke-test перевіряє мобільну кімнату, QR, прямий upload, viewer, touch targets і адаптивність на 375/768/1024/1440 px. Для нього Docker-оточення має працювати, а Chrome/Chromium — бути встановленим:
+Браузерний smoke-test перевіряє мобільну кімнату, Telegram/QR-запрошення, upload, viewer, керування учасниками, передачу власності, touch targets і адаптивність на 375/768/1024/1440 px. Для нього Docker-оточення має працювати, а Chrome/Chromium — бути встановленим:
 
 ```powershell
 Set-Location frontend

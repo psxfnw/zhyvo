@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -159,6 +160,26 @@ func (s *Store) PutFile(ctx context.Context, objectKey, filename, contentType st
 		return fmt.Errorf("put object file: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) PutReader(ctx context.Context, objectKey string, reader io.Reader, contentType string) (int64, error) {
+	info, err := s.client.PutObject(ctx, s.bucket, objectKey, reader, -1, minio.PutObjectOptions{ContentType: contentType})
+	if err != nil {
+		return 0, fmt.Errorf("put object stream: %w", err)
+	}
+	return info.Size, nil
+}
+
+func (s *Store) Open(ctx context.Context, objectKey string) (io.ReadCloser, error) {
+	object, err := s.client.GetObject(ctx, s.bucket, objectKey, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get object: %w", err)
+	}
+	if _, err := object.Stat(); err != nil {
+		_ = object.Close()
+		return nil, fmt.Errorf("stat opened object: %w", err)
+	}
+	return object, nil
 }
 
 func (s *Store) StartMultipart(ctx context.Context, objectKey, contentType string) (string, error) {

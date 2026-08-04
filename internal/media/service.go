@@ -346,7 +346,8 @@ func (s *Service) Complete(ctx context.Context, identityID, uploadID uuid.UUID, 
 		SET reserved_files = reserved_files - 1,
 		    reserved_storage_bytes = reserved_storage_bytes - $1,
 		    used_files = used_files + 1,
-		    used_storage_bytes = used_storage_bytes + $1
+		    used_storage_bytes = used_storage_bytes + $1,
+		    media_revision = media_revision + 1
 		WHERE id = (SELECT room_id FROM media WHERE id = $2)
 	`, upload.sizeBytes, upload.MediaID); err != nil {
 		return MediaResult{}, fmt.Errorf("commit room capacity: %w", err)

@@ -1,6 +1,7 @@
 import { CSSProperties, FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowDownToLine,
+  Archive,
   ArrowLeft,
   Ban,
   Check,
@@ -30,11 +31,11 @@ import {
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { ApiError, ensureIdentity, getSession, media, rooms } from './lib/api'
+import { ApiError, archives, ensureIdentity, getSession, media, rooms } from './lib/api'
 import { bytes, errorMessage, normalizeSlug, remaining } from './lib/format'
 import { getTelegramBootstrapError, getTelegramWebApp, openTelegramInvite, telegramRoomLink } from './lib/telegram'
 import { uploadFile } from './lib/upload'
-import type { AccessMode, BlockedRoomMember, GalleryItem, Room, RoomActivityEvent, RoomMember, RoomPreview, Session, UploadProgress } from './types'
+import type { AccessMode, BlockedRoomMember, GalleryItem, Room, RoomActivityEvent, RoomArchive, RoomMember, RoomPreview, Session, UploadProgress } from './types'
 
 function uuid() {
   return crypto.randomUUID()
@@ -571,6 +572,8 @@ function RoomPage() {
   const [members, setMembers] = useState<RoomMember[]>([])
   const [blockedMembers, setBlockedMembers] = useState<BlockedRoomMember[]>([])
   const [activity, setActivity] = useState<RoomActivityEvent[]>([])
+  const [roomArchive, setRoomArchive] = useState<RoomArchive | null>(null)
+  const [archiveBusy, setArchiveBusy] = useState(false)
   const [membersTab, setMembersTab] = useState<'members' | 'activity'>('members')
   const [memberActionID, setMemberActionID] = useState<string | null>(null)
   const [membersLoading, setMembersLoading] = useState(false)
@@ -642,6 +645,17 @@ function RoomPage() {
   }, [refreshGallery, room])
 
   useEffect(() => {
+    if (!roomArchive || !['pending', 'processing'].includes(roomArchive.status)) return
+    const timer = window.setInterval(() => {
+      void archives.get(roomArchive.id).then(({ archive }) => setRoomArchive(archive)).catch((cause) => {
+        setError(errorMessage(cause))
+        setRoomArchive(null)
+      })
+    }, 1500)
+    return () => window.clearInterval(timer)
+  }, [roomArchive])
+
+  useEffect(() => {
     if (!settings) return
     const previousFocus = document.activeElement as HTMLElement | null
     settingsCloseRef.current?.focus()
@@ -678,6 +692,7 @@ function RoomPage() {
         onStatus: (message) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, message } : item)),
       })
       setUploads((current) => current.map((item) => item.id === queueID ? { ...item, state: 'done', progress: 100, message: undefined } : item))
+      setRoomArchive(null)
       uploadFilesRef.current.delete(queueID)
       uploadControllersRef.current.delete(queueID)
     } catch (cause) {
@@ -824,6 +839,7 @@ function RoomPage() {
     try {
       await media.remove(item.id)
       setGallery((current) => current.filter((candidate) => candidate.id !== item.id))
+      setRoomArchive(null)
     } catch (cause) { setError(errorMessage(cause)) }
   }
 
@@ -833,6 +849,32 @@ function RoomPage() {
       await rooms.remove(slug)
       navigate('/')
     } catch (cause) { setError(errorMessage(cause)) }
+  }
+
+  async function handleArchive() {
+    if (archiveBusy) return
+    setArchiveBusy(true)
+    setError('')
+    try {
+      let job = roomArchive
+      if (!job || job.status === 'failed') {
+        const result = await archives.request(slug)
+        job = result.archive
+        setRoomArchive(job)
+      }
+      if (job.status === 'ready') {
+        const download = await archives.download(job.id)
+        const anchor = document.createElement('a')
+        anchor.href = download.url
+        anchor.download = download.filename
+        anchor.rel = 'noopener'
+        anchor.click()
+      }
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setArchiveBusy(false)
+    }
   }
 
   if (loading) return <main className="status-page"><Brand /><div className="loading-line" /><p>Відкриваємо кімнату…</p></main>
@@ -869,15 +911,29 @@ function RoomPage() {
 
       <section className="gallery-toolbar">
         <div><h2>Галерея</h2><p>{bytes(room.used_storage_bytes)} використано</p></div>
-        {room.accepting_uploads ? (
+        <div className="gallery-toolbar__actions">
+          {gallery.length > 0 && (
+            <button className="secondary-button primary-button--fit archive-button" onClick={() => void handleArchive()} disabled={archiveBusy || roomArchive?.status === 'pending' || roomArchive?.status === 'processing'} aria-label="Завантажити всю галерею">
+              <Archive size={19} />
+              <small>ZIP</small>
+              <span>{roomArchive?.status === 'ready' ? 'Завантажити ZIP' : roomArchive?.status === 'failed' ? 'Повторити ZIP' : roomArchive ? `${roomArchive.processed_files}/${roomArchive.total_files}` : 'Завантажити все'}</span>
+            </button>
+          )}
+          {room.accepting_uploads ? (
           <>
             <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,image/avif,image/gif,video/mp4,video/quicktime,video/webm,video/x-m4v,video/3gpp" multiple hidden onChange={(event) => void acceptFiles(event.target.files)} />
             <button className="primary-button primary-button--fit upload-button" onClick={() => inputRef.current?.click()} aria-label="Додати фото або відео"><ImagePlus size={21} /><span>Додати медіа</span></button>
           </>
-        ) : <span className="uploads-closed"><LockKeyhole size={16} /> Завантаження закриті</span>}
+          ) : <span className="uploads-closed"><LockKeyhole size={16} /> Завантаження закриті</span>}
+        </div>
       </section>
 
       <div className="storage-line"><span style={{ width: `${usedPercent}%` }} /></div>
+
+      {roomArchive && <section className={`archive-status archive-status--${roomArchive.status}`} aria-live="polite">
+        <div><Archive size={20} /><div><strong>{roomArchive.status === 'ready' ? 'Архів готовий' : roomArchive.status === 'failed' ? 'Не вдалося створити архів' : roomArchive.status === 'pending' ? 'Архів у черзі' : 'Збираємо оригінали'}</strong><span>{roomArchive.status === 'ready' ? `${roomArchive.total_files} файлів · ${bytes(roomArchive.size_bytes ?? roomArchive.total_bytes)}` : roomArchive.status === 'failed' ? 'Натисніть «Повторити ZIP»' : `${roomArchive.processed_files} із ${roomArchive.total_files} файлів`}</span></div></div>
+        <div className="archive-progress"><span style={{ width: `${roomArchive.total_files ? (roomArchive.processed_files / roomArchive.total_files) * 100 : 0}%` }} /></div>
+      </section>}
 
       {gallery.length ? (
         <>

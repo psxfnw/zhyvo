@@ -234,7 +234,8 @@ func (s *Service) Delete(ctx context.Context, identityID, mediaID uuid.UUID) err
 		if _, err := tx.Exec(ctx, `
 			UPDATE rooms
 			SET used_files = used_files - 1,
-			    used_storage_bytes = used_storage_bytes - $1
+			    used_storage_bytes = used_storage_bytes - $1,
+			    media_revision = media_revision + 1
 			WHERE id = $2
 		`, sizeBytes, roomID); err != nil {
 			return err

@@ -106,3 +106,19 @@ export interface UploadProgress {
   message?: string
   canRetry?: boolean
 }
+
+export interface RoomArchive {
+  id: string
+  room_slug: string
+  status: 'pending' | 'processing' | 'ready' | 'failed'
+  filename: string
+  total_files: number
+  processed_files: number
+  total_bytes: number
+  processed_bytes: number
+  size_bytes?: number
+  error?: string
+  created_at: string
+  updated_at: string
+  completed_at?: string
+}

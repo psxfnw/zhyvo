@@ -12,6 +12,7 @@ import (
 	"photodrop/internal/media"
 	"photodrop/internal/objectstore"
 	"photodrop/internal/room"
+	"photodrop/internal/roomarchive"
 )
 
 type Dependencies struct {
@@ -21,6 +22,7 @@ type Dependencies struct {
 	Tokens              *auth.TokenManager
 	RoomService         *room.Service
 	MediaService        *media.Service
+	ArchiveService      *roomarchive.Service
 	TelegramBotToken    string
 	TelegramInitDataTTL time.Duration
 }
@@ -65,6 +67,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 
 	roomAPI := roomHandler{service: dependencies.RoomService}
 	uploadAPI := uploadHandler{service: dependencies.MediaService}
+	archiveAPI := archiveHandler{service: dependencies.ArchiveService}
 	router.Get("/api/v1/rooms/{slug}/preview", roomAPI.preview)
 	router.Group(func(router chi.Router) {
 		router.Use(requireAuth(dependencies.Tokens, dependencies.AuthService))
@@ -86,6 +89,9 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		router.Get("/api/v1/rooms/{slug}/media", uploadAPI.gallery)
 		router.Post("/api/v1/media/{mediaID}/download-url", uploadAPI.download)
 		router.Delete("/api/v1/media/{mediaID}", uploadAPI.deleteMedia)
+		router.Post("/api/v1/rooms/{slug}/archive", archiveAPI.request)
+		router.Get("/api/v1/archives/{archiveID}", archiveAPI.get)
+		router.Post("/api/v1/archives/{archiveID}/download-url", archiveAPI.download)
 	})
 
 	router.NotFound(func(response http.ResponseWriter, request *http.Request) {

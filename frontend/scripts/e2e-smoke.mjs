@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { chromium } from 'playwright-core'
 
@@ -86,6 +86,23 @@ try {
 
   await page.locator('input[type="file"]').setInputFiles(resolve('public', 'pwa-64x64.png'))
   await page.locator('article.media-card').waitFor({ timeout: 20_000 })
+  await page.getByRole('button', { name: 'Завантажити всю галерею' }).click()
+  await page.getByText('Архів готовий').waitFor({ timeout: 30_000 })
+  await page.screenshot({ path: resolve(artifacts, 'archive-ready-375.png'), fullPage: true })
+  const downloadEvent = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Завантажити всю галерею' }).click()
+  const archiveDownload = await downloadEvent
+  const archivePath = resolve(artifacts, 'room.zip')
+  await archiveDownload.saveAs(archivePath)
+  const archiveBytes = await readFile(archivePath)
+  if (archiveBytes[0] !== 0x50 || archiveBytes[1] !== 0x4b) throw new Error('Downloaded room archive is not a ZIP file')
+  const reusedArchive = await json(`/rooms/${slug}/archive`, {
+    method: 'POST', headers: { Authorization: `Bearer ${auth.access_token}` },
+  })
+  const reusedAgain = await json(`/rooms/${slug}/archive`, {
+    method: 'POST', headers: { Authorization: `Bearer ${auth.access_token}` },
+  })
+  if (reusedArchive.archive.id !== reusedAgain.archive.id || reusedAgain.archive.status !== 'ready') throw new Error('Ready archive was not reused')
   await page.locator('article.media-card .media-preview').first().click()
   await page.getByRole('dialog', { name: 'pwa-64x64.png' }).waitFor()
   if (!page.url().includes('media=')) throw new Error('Media viewer did not update the URL')
@@ -187,7 +204,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, upload: true, viewer: true, myRooms: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, upload: true, archive: true, viewer: true, myRooms: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

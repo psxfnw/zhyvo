@@ -1,4 +1,4 @@
-import type { AccessMode, BlockedRoomMember, GalleryPage, Identity, Room, RoomActivityEvent, RoomMember, RoomPreview, Session, UploadTicket } from '../types'
+import type { AccessMode, BlockedRoomMember, GalleryPage, Identity, Room, RoomActivityEvent, RoomArchive, RoomMember, RoomPreview, Session, UploadTicket } from '../types'
 
 const SESSION_KEY = 'photodrop.session.v1'
 
@@ -83,8 +83,10 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
     return api<T>(path, { ...options, retryAuth: false })
   }
   if (!response.ok) throw await parseError(response)
-  if (response.status === 204 || response.status === 202) return undefined as T
-  return response.json() as Promise<T>
+  if (response.status === 204) return undefined as T
+  const body = await response.text()
+  if (!body) return undefined as T
+  return JSON.parse(body) as T
 }
 
 export async function createAnonymous(displayName: string) {
@@ -157,6 +159,12 @@ export const media = {
       method: 'POST', signal, body: JSON.stringify({ parts }),
     }),
   abort: (uploadID: string) => api<void>(`/uploads/${uploadID}`, { method: 'DELETE' }),
+}
+
+export const archives = {
+  request: (slug: string) => api<{ archive: RoomArchive }>(`/rooms/${slug}/archive`, { method: 'POST' }),
+  get: (id: string) => api<{ archive: RoomArchive }>(`/archives/${id}`),
+  download: (id: string) => api<{ url: string; filename: string; expires_at: string }>(`/archives/${id}/download-url`, { method: 'POST' }),
 }
 
 export type { Identity }

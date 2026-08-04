@@ -145,11 +145,11 @@ export const media = {
   ),
   download: (id: string) => api<{ url: string; filename: string; expires_at: string }>(`/media/${id}/download-url`, { method: 'POST' }),
   remove: (id: string) => api<void>(`/media/${id}`, { method: 'DELETE' }),
-  initiate: (slug: string, file: File, signal?: AbortSignal) => api<{ upload: UploadTicket; media_id: string }>(`/rooms/${slug}/uploads`, {
+  initiate: (slug: string, file: File, signal?: AbortSignal, idempotencyKey: string = crypto.randomUUID(), mimeType = file.type) => api<{ upload: UploadTicket; media_id: string }>(`/rooms/${slug}/uploads`, {
     method: 'POST',
     signal,
-    headers: { 'Idempotency-Key': crypto.randomUUID() },
-    body: JSON.stringify({ filename: file.name, mime_type: file.type, size_bytes: file.size, captured_at: null }),
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify({ filename: file.name, mime_type: mimeType, size_bytes: file.size, captured_at: null }),
   }),
   partURLs: (uploadID: string, partNumbers: number[], signal?: AbortSignal) => api<{ parts: Array<{ part_number: number; url: string }> }>(`/uploads/${uploadID}/parts`, {
     method: 'POST', signal, body: JSON.stringify({ part_numbers: partNumbers }),

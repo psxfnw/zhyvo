@@ -61,7 +61,9 @@ await context.addInitScript((storedSession) => {
 }, auth)
 const page = await context.newPage()
 const pageErrors = []
+const requestFailures = []
 page.on('pageerror', (error) => pageErrors.push(error.message))
+page.on('requestfailed', (request) => requestFailures.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText}`))
 
 try {
   await page.goto(`${baseURL}/r/${slug}`, { waitUntil: 'networkidle' })
@@ -84,8 +86,29 @@ try {
   await page.screenshot({ path: resolve(artifacts, 'share-375.png'), fullPage: true })
   await shareDialog.getByRole('button', { name: 'Закрити' }).click()
 
-  await page.locator('input[type="file"]').setInputFiles(resolve('public', 'pwa-64x64.png'))
-  await page.locator('article.media-card').waitFor({ timeout: 20_000 })
+  let interruptedPUTs = 0
+  await page.route('**/*', async (route) => {
+    if (route.request().method() === 'PUT' && interruptedPUTs < 5) {
+      interruptedPUTs += 1
+      await route.abort('connectionreset')
+      return
+    }
+    await route.continue()
+  })
+  await page.locator('input[type="file"]:not([data-resume-upload])').setInputFiles(resolve('public', 'pwa-64x64.png'))
+  await page.getByRole('button', { name: 'Повторити' }).waitFor({ timeout: 20_000 })
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
+  const restoreButton = page.getByRole('button', { name: 'Вибрати файл' })
+  await restoreButton.waitFor()
+  await page.screenshot({ path: resolve(artifacts, 'upload-recovery-375.png'), fullPage: true })
+  await page.unroute('**/*')
+  await restoreButton.click()
+  await page.locator('input[data-resume-upload]').setInputFiles(resolve('public', 'pwa-64x64.png'))
+  await page.locator('article.media-card').waitFor({ timeout: 20_000 }).catch(async (cause) => {
+    const queueState = await page.locator('.upload-queue').innerText().catch(() => 'upload queue missing')
+    throw new Error(`Recovered upload did not finish: ${queueState}; browser errors: ${pageErrors.join('; ')}; requests: ${requestFailures.slice(-8).join('; ')}`, { cause })
+  })
   await page.getByRole('button', { name: 'Завантажити всю галерею' }).click()
   await page.getByText('Архів готовий').waitFor({ timeout: 30_000 })
   await page.screenshot({ path: resolve(artifacts, 'archive-ready-375.png'), fullPage: true })
@@ -204,7 +227,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, upload: true, archive: true, viewer: true, myRooms: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, upload: true, uploadRecovery: true, archive: true, viewer: true, myRooms: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

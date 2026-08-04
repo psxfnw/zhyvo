@@ -101,8 +101,15 @@ export interface UploadTicket {
 export interface UploadProgress {
   id: string
   filename: string
+  size_bytes: number
+  mime_type: string
+  last_modified: number
+  idempotency_key: string
+  upload_id?: string
+  completed_parts?: Array<{ part_number: number; etag: string }>
+  created_at: string
   progress: number
-  state: 'queued' | 'uploading' | 'done' | 'error'
+  state: 'queued' | 'uploading' | 'waiting_file' | 'done' | 'error'
   message?: string
   canRetry?: boolean
 }

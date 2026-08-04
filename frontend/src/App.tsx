@@ -35,6 +35,7 @@ import { ApiError, archives, ensureIdentity, getSession, media, rooms } from './
 import { bytes, errorMessage, normalizeSlug, remaining } from './lib/format'
 import { getTelegramBootstrapError, getTelegramWebApp, openTelegramInvite, telegramRoomLink } from './lib/telegram'
 import { uploadFile } from './lib/upload'
+import { loadUploadQueue, saveUploadQueue } from './lib/uploadQueue'
 import type { AccessMode, BlockedRoomMember, GalleryItem, Room, RoomActivityEvent, RoomArchive, RoomMember, RoomPreview, Session, UploadProgress } from './types'
 
 function uuid() {
@@ -396,7 +397,7 @@ function UploadQueue({ uploads, onCancel, onRetry }: {
             <div><strong>{item.filename}</strong><span>{item.state === 'done' ? 'Готово' : item.state === 'error' ? item.message : item.message ?? `${item.progress}%`}</span></div>
             <div className="upload-actions">
               {item.state === 'uploading' && <button type="button" onClick={() => onCancel(item.id)}>Скасувати</button>}
-              {item.state === 'error' && item.canRetry && <button type="button" onClick={() => onRetry(item.id)}><RefreshCw size={15} /> Повторити</button>}
+              {(item.state === 'error' || item.state === 'waiting_file') && item.canRetry && <button type="button" onClick={() => onRetry(item.id)}><RefreshCw size={15} /> {item.state === 'waiting_file' ? 'Вибрати файл' : 'Повторити'}</button>}
             </div>
           </div>
           <div className={`progress ${item.state}`}><span style={{ width: `${item.progress}%` }} /></div>
@@ -549,10 +550,15 @@ function RoomPage() {
   const { slug: routeSlug = '' } = useParams()
   const slug = normalizeSlug(routeSlug)
   const navigate = useNavigate()
+  const session = useSession()
   const [searchParams, setSearchParams] = useSearchParams()
   const inputRef = useRef<HTMLInputElement>(null)
+  const resumeInputRef = useRef<HTMLInputElement>(null)
+  const resumeTargetRef = useRef<string | null>(null)
   const uploadFilesRef = useRef(new Map<string, File>())
   const uploadControllersRef = useRef(new Map<string, AbortController>())
+  const uploadsRef = useRef<UploadProgress[]>([])
+  const uploadsHydratedKeyRef = useRef('')
   const galleryRefreshRef = useRef(false)
   const loadedPastFirstPageRef = useRef(false)
   const settingsCloseRef = useRef<HTMLButtonElement>(null)
@@ -579,6 +585,21 @@ function RoomPage() {
   const [membersLoading, setMembersLoading] = useState(false)
   const [membersError, setMembersError] = useState('')
   const selectedMediaID = searchParams.get('media')
+
+  useEffect(() => { uploadsRef.current = uploads }, [uploads])
+
+  useEffect(() => {
+    if (!room || !session) return
+    const key = `${session.identity.id}:${slug}`
+    if (uploadsHydratedKeyRef.current === key) return
+    uploadsHydratedKeyRef.current = key
+    setUploads(loadUploadQueue(session.identity.id, slug))
+  }, [room, session, slug])
+
+  useEffect(() => {
+    if (!session || uploadsHydratedKeyRef.current !== `${session.identity.id}:${slug}`) return
+    saveUploadQueue(session.identity.id, slug, uploads)
+  }, [session, slug, uploads])
 
   const loadGallery = useCallback(async (append = false, nextCursor?: string | null) => {
     const page = await media.gallery(slug, append ? nextCursor : null)
@@ -680,16 +701,22 @@ function RoomPage() {
     return () => { document.body.style.overflow = previousOverflow }
   }, [membersOpen, selectedMediaID, settings, shareDialog])
 
-  const processUpload = useCallback(async (queueID: string, file: File) => {
+  const processUpload = useCallback(async (queueID: string, file: File, initialItem?: UploadProgress) => {
     const controller = uploadControllersRef.current.get(queueID) ?? new AbortController()
     uploadControllersRef.current.set(queueID, controller)
     if (controller.signal.aborted) return
+    const queueItem = initialItem ?? uploadsRef.current.find((item) => item.id === queueID)
+    if (!queueItem) return
     setUploads((current) => current.map((item) => item.id === queueID ? { ...item, state: 'uploading', message: undefined, canRetry: false } : item))
     try {
       await uploadFile(slug, file, {
         signal: controller.signal,
+        idempotencyKey: queueItem.idempotency_key,
+        mimeType: queueItem.mime_type,
+        completedParts: queueItem.completed_parts,
         onProgress: (progress) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, progress, message: undefined } : item)),
         onStatus: (message) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, message } : item)),
+        onCheckpoint: ({ uploadID, completedParts }) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, upload_id: uploadID, completed_parts: completedParts } : item)),
       })
       setUploads((current) => current.map((item) => item.id === queueID ? { ...item, state: 'done', progress: 100, message: undefined } : item))
       setRoomArchive(null)
@@ -697,11 +724,13 @@ function RoomPage() {
       uploadControllersRef.current.delete(queueID)
     } catch (cause) {
       const cancelled = controller.signal.aborted
+      const sessionExpired = cause instanceof ApiError && ['UPLOAD_EXPIRED', 'UPLOAD_NOT_FOUND'].includes(cause.code)
       setUploads((current) => current.map((item) => item.id === queueID ? {
         ...item,
         state: 'error',
-        message: cancelled ? 'Скасовано' : errorMessage(cause),
-        canRetry: true,
+        message: cancelled ? 'Скасовано' : sessionExpired ? 'Сесія завершилася — почнемо файл заново' : errorMessage(cause),
+        canRetry: !cancelled,
+        ...(sessionExpired ? { idempotency_key: uuid(), upload_id: undefined, completed_parts: [] } : {}),
       } : item))
       uploadControllersRef.current.delete(queueID)
     }
@@ -713,7 +742,17 @@ function RoomPage() {
   async function acceptFiles(files: FileList | null) {
     if (!files?.length || !room) return
     const accepted = Array.from(files)
-    const queue = accepted.map((file) => ({ id: uuid(), filename: file.name, progress: 0, state: 'queued' as const }))
+    const queue: UploadProgress[] = accepted.map((file) => ({
+      id: uuid(),
+      filename: file.name,
+      size_bytes: file.size,
+      mime_type: file.type,
+      last_modified: file.lastModified,
+      idempotency_key: uuid(),
+      created_at: new Date().toISOString(),
+      progress: 0,
+      state: 'queued',
+    }))
     queue.forEach((item, index) => {
       uploadFilesRef.current.set(item.id, accepted[index])
       uploadControllersRef.current.set(item.id, new AbortController())
@@ -723,7 +762,7 @@ function RoomPage() {
     const worker = async () => {
       while (nextIndex < queue.length) {
         const index = nextIndex++
-        await processUpload(queue[index].id, accepted[index])
+        await processUpload(queue[index].id, accepted[index], queue[index])
       }
     }
     await Promise.all(Array.from({ length: Math.min(2, queue.length) }, worker))
@@ -736,15 +775,43 @@ function RoomPage() {
 
   function cancelUpload(id: string) {
     uploadControllersRef.current.get(id)?.abort()
-    setUploads((current) => current.map((item) => item.id === id ? { ...item, state: 'error', message: 'Скасовано', canRetry: true } : item))
+    setUploads((current) => current.map((item) => item.id === id ? { ...item, state: 'error', message: 'Скасовано', canRetry: false } : item))
+    window.setTimeout(() => setUploads((current) => current.filter((item) => item.id !== id)), 1800)
   }
 
   function retryUpload(id: string) {
     const file = uploadFilesRef.current.get(id)
-    if (!file) return
+    if (!file) {
+      resumeTargetRef.current = id
+      resumeInputRef.current?.click()
+      return
+    }
     uploadControllersRef.current.set(id, new AbortController())
     setUploads((current) => current.map((item) => item.id === id ? { ...item, progress: 0, state: 'queued', message: undefined, canRetry: false } : item))
     void processUpload(id, file).then(async () => {
+      await refreshGallery().catch(() => undefined)
+      const refreshedRoom = await rooms.get(slug).catch(() => null)
+      if (refreshedRoom) setRoom(refreshedRoom.room)
+    })
+  }
+
+  function resumeUpload(files: FileList | null) {
+    const id = resumeTargetRef.current
+    const file = files?.[0]
+    resumeTargetRef.current = null
+    if (resumeInputRef.current) resumeInputRef.current.value = ''
+    if (!id || !file) return
+    const item = uploadsRef.current.find((candidate) => candidate.id === id)
+    if (!item) return
+    if (file.name !== item.filename || file.size !== item.size_bytes) {
+      setUploads((current) => current.map((candidate) => candidate.id === id ? { ...candidate, state: 'waiting_file', message: 'Оберіть той самий файл: назва й розмір мають збігатися', canRetry: true } : candidate))
+      return
+    }
+    uploadFilesRef.current.set(id, file)
+    uploadControllersRef.current.set(id, new AbortController())
+    const resumed = { ...item, state: 'queued' as const, message: undefined, canRetry: false }
+    setUploads((current) => current.map((candidate) => candidate.id === id ? resumed : candidate))
+    void processUpload(id, file, resumed).then(async () => {
       await refreshGallery().catch(() => undefined)
       const refreshedRoom = await rooms.get(slug).catch(() => null)
       if (refreshedRoom) setRoom(refreshedRoom.room)
@@ -927,6 +994,7 @@ function RoomPage() {
           ) : <span className="uploads-closed"><LockKeyhole size={16} /> Завантаження закриті</span>}
         </div>
       </section>
+      <input ref={resumeInputRef} data-resume-upload type="file" hidden onChange={(event) => resumeUpload(event.target.files)} />
 
       <div className="storage-line"><span style={{ width: `${usedPercent}%` }} /></div>
 

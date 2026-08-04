@@ -532,6 +532,59 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
 
+  /rooms/{slug}/archive:
+    post:
+      operationId: requestRoomArchive
+      tags: [Media]
+      summary: Create or reuse a ZIP archive for the current gallery revision
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      responses:
+        '200':
+          description: A matching archive is already ready
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomArchiveResponse'}
+        '202':
+          description: Archive generation is queued or in progress
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomArchiveResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '410': {$ref: '#/components/responses/Gone'}
+
+  /archives/{archiveID}:
+    get:
+      operationId: getRoomArchive
+      tags: [Media]
+      summary: Get ZIP generation status and progress
+      parameters:
+        - $ref: '#/components/parameters/ArchiveID'
+      responses:
+        '200':
+          description: Archive status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomArchiveResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /archives/{archiveID}/download-url:
+    post:
+      operationId: getRoomArchiveDownloadURL
+      tags: [Media]
+      summary: Issue a presigned URL for a ready ZIP archive
+      parameters:
+        - $ref: '#/components/parameters/ArchiveID'
+      responses:
+        '200':
+          description: Short-lived ZIP download URL
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Download'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
 components:
   securitySchemes:
     bearerAuth:
@@ -552,6 +605,11 @@ components:
       schema: {type: string, format: uuid}
     MediaID:
       name: mediaID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ArchiveID:
+      name: archiveID
       in: path
       required: true
       schema: {type: string, format: uuid}
@@ -736,6 +794,30 @@ components:
         subject_id: {type: string, format: uuid}
         subject_display_name: {type: string}
         created_at: {type: string, format: date-time}
+
+    RoomArchive:
+      type: object
+      required: [id, room_slug, status, filename, total_files, processed_files, total_bytes, processed_bytes, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        room_slug: {type: string}
+        status: {type: string, enum: [pending, processing, ready, failed]}
+        filename: {type: string}
+        total_files: {type: integer, minimum: 1}
+        processed_files: {type: integer, minimum: 0}
+        total_bytes: {type: integer, format: int64, minimum: 0}
+        processed_bytes: {type: integer, format: int64, minimum: 0}
+        size_bytes: {type: integer, format: int64, minimum: 0}
+        error: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        completed_at: {type: string, format: date-time}
+
+    RoomArchiveResponse:
+      type: object
+      required: [archive]
+      properties:
+        archive: {$ref: '#/components/schemas/RoomArchive'}
 
     InitiateUploadRequest:
       type: object

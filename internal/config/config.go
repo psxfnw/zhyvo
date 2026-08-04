@@ -13,6 +13,7 @@ type Config struct {
 	ShutdownTimeout   time.Duration
 	CleanupInterval   time.Duration
 	ThumbnailInterval time.Duration
+	ArchiveInterval   time.Duration
 	S3                S3Config
 	Auth              AuthConfig
 	Telegram          TelegramConfig
@@ -56,6 +57,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	archiveInterval, err := duration("ARCHIVE_INTERVAL", 2*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 
 	useSSL, err := boolean("S3_USE_SSL", false)
 	if err != nil {
@@ -89,6 +94,7 @@ func Load() (Config, error) {
 		ShutdownTimeout:   shutdownTimeout,
 		CleanupInterval:   cleanupInterval,
 		ThumbnailInterval: thumbnailInterval,
+		ArchiveInterval:   archiveInterval,
 		S3: S3Config{
 			Endpoint:       value("S3_ENDPOINT", "localhost:9000"),
 			PublicEndpoint: value("S3_PUBLIC_ENDPOINT", value("S3_ENDPOINT", "localhost:9000")),
@@ -126,6 +132,9 @@ func Load() (Config, error) {
 	}
 	if cfg.ThumbnailInterval <= 0 {
 		return Config{}, fmt.Errorf("THUMBNAIL_INTERVAL must be positive")
+	}
+	if cfg.ArchiveInterval <= 0 {
+		return Config{}, fmt.Errorf("ARCHIVE_INTERVAL must be positive")
 	}
 	if len(cfg.Auth.AccessSecret) < 32 {
 		return Config{}, fmt.Errorf("AUTH_ACCESS_SECRET must contain at least 32 characters")

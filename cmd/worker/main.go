@@ -11,6 +11,7 @@ import (
 	"photodrop/internal/config"
 	"photodrop/internal/database"
 	"photodrop/internal/objectstore"
+	"photodrop/internal/roomarchive"
 	"photodrop/internal/thumbnail"
 )
 
@@ -47,10 +48,12 @@ func run(logger *slog.Logger) error {
 
 	cleanupService := cleanup.New(db, store, cfg.CleanupInterval, logger)
 	thumbnailService := thumbnail.New(db, store, cfg.ThumbnailInterval, logger)
-	errCh := make(chan error, 2)
+	archiveWorker := roomarchive.NewWorker(db, store, cfg.ArchiveInterval, logger)
+	errCh := make(chan error, 3)
 	go func() { errCh <- cleanupService.Run(ctx) }()
 	go func() { errCh <- thumbnailService.Run(ctx) }()
-	logger.Info("worker started", "cleanup_interval", cfg.CleanupInterval, "thumbnail_interval", cfg.ThumbnailInterval)
+	go func() { errCh <- archiveWorker.Run(ctx) }()
+	logger.Info("worker started", "cleanup_interval", cfg.CleanupInterval, "thumbnail_interval", cfg.ThumbnailInterval, "archive_interval", cfg.ArchiveInterval)
 	select {
 	case <-ctx.Done():
 		return nil

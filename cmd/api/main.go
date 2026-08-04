@@ -16,6 +16,7 @@ import (
 	"photodrop/internal/media"
 	"photodrop/internal/objectstore"
 	"photodrop/internal/room"
+	"photodrop/internal/roomarchive"
 )
 
 func main() {
@@ -49,6 +50,7 @@ func run(logger *slog.Logger) error {
 	authService := auth.NewService(db, tokens, cfg.Auth.RefreshTTL)
 	roomService := room.NewService(db)
 	mediaService := media.NewService(db, store)
+	archiveService := roomarchive.NewService(db, store)
 
 	server := &http.Server{
 		Addr: cfg.HTTPAddr,
@@ -59,6 +61,7 @@ func run(logger *slog.Logger) error {
 			Tokens:              tokens,
 			RoomService:         roomService,
 			MediaService:        mediaService,
+			ArchiveService:      archiveService,
 			TelegramBotToken:    cfg.Telegram.BotToken,
 			TelegramInitDataTTL: cfg.Telegram.InitDataTTL,
 		}),

@@ -1,4 +1,4 @@
-import type { AccessMode, GalleryPage, Identity, Room, RoomMember, RoomPreview, Session, UploadTicket } from '../types'
+import type { AccessMode, BlockedRoomMember, GalleryPage, Identity, Room, RoomActivityEvent, RoomMember, RoomPreview, Session, UploadTicket } from '../types'
 
 const SESSION_KEY = 'photodrop.session.v1'
 
@@ -125,7 +125,13 @@ export const rooms = {
     method: 'POST', body: JSON.stringify({ secret }),
   }),
   get: (slug: string) => api<{ room: Room }>(`/rooms/${slug}`),
-	members: (slug: string) => api<{ members: RoomMember[] }>(`/rooms/${slug}/members`),
+	members: (slug: string) => api<{ members: RoomMember[]; blocked_members: BlockedRoomMember[] }>(`/rooms/${slug}/members`),
+  removeMember: (slug: string, identityID: string) => api<void>(`/rooms/${slug}/members/${identityID}`, { method: 'DELETE' }),
+  unblockMember: (slug: string, identityID: string) => api<void>(`/rooms/${slug}/blocked-members/${identityID}`, { method: 'DELETE' }),
+  transferOwnership: (slug: string, identityID: string) => api<{ room: Room }>(`/rooms/${slug}/ownership`, {
+    method: 'POST', body: JSON.stringify({ identity_id: identityID }),
+  }),
+  activity: (slug: string) => api<{ events: RoomActivityEvent[] }>(`/rooms/${slug}/activity`),
   update: (slug: string, input: Partial<{ name: string; accepting_uploads: boolean }>) =>
     api<{ room: Room }>(`/rooms/${slug}`, { method: 'PATCH', body: JSON.stringify(input) }),
   remove: (slug: string) => api<void>(`/rooms/${slug}`, { method: 'DELETE' }),

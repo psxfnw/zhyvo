@@ -34,6 +34,10 @@ type updateRoomRequest struct {
 	Access           *roomAccessRequest `json:"access"`
 }
 
+type transferOwnershipRequest struct {
+	IdentityID uuid.UUID `json:"identity_id"`
+}
+
 func (handler roomHandler) create(response http.ResponseWriter, request *http.Request) {
 	principal, ok := principalFromContext(request.Context())
 	if !ok {
@@ -134,7 +138,76 @@ func (handler roomHandler) members(response http.ResponseWriter, request *http.R
 		handler.writeError(response, request, err)
 		return
 	}
-	writeJSON(response, http.StatusOK, map[string]any{"members": result})
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler roomHandler) removeMember(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	memberID, err := uuid.Parse(chi.URLParam(request, "identityID"))
+	if err != nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_IDENTITY_ID", "Identity ID must be a UUID")
+		return
+	}
+	if err := handler.service.RemoveMember(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), memberID); err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (handler roomHandler) unblockMember(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	memberID, err := uuid.Parse(chi.URLParam(request, "identityID"))
+	if err != nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_IDENTITY_ID", "Identity ID must be a UUID")
+		return
+	}
+	if err := handler.service.UnblockMember(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), memberID); err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (handler roomHandler) transferOwnership(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	var input transferOwnershipRequest
+	if err := decodeJSON(response, request, &input); err != nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_JSON", "Request body is invalid")
+		return
+	}
+	updated, err := handler.service.TransferOwnership(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), input.IdentityID)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"room": updated})
+}
+
+func (handler roomHandler) activity(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	result, err := handler.service.Activity(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"))
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"events": result})
 }
 
 func (handler roomHandler) update(response http.ResponseWriter, request *http.Request) {
@@ -189,6 +262,14 @@ func (handler roomHandler) writeError(response http.ResponseWriter, request *htt
 		writeAPIError(response, request, http.StatusForbidden, "ROOM_MEMBERSHIP_REQUIRED", "Join the room before accessing it")
 	case errors.Is(err, room.ErrOwnerRequired):
 		writeAPIError(response, request, http.StatusForbidden, "ROOM_OWNER_REQUIRED", "Only the room owner can perform this action")
+	case errors.Is(err, room.ErrMemberBlocked):
+		writeAPIError(response, request, http.StatusForbidden, "ROOM_MEMBER_BLOCKED", "You were removed from this room by its owner")
+	case errors.Is(err, room.ErrMemberNotFound):
+		writeAPIError(response, request, http.StatusNotFound, "ROOM_MEMBER_NOT_FOUND", "Room member not found")
+	case errors.Is(err, room.ErrMemberNotBlocked):
+		writeAPIError(response, request, http.StatusNotFound, "ROOM_MEMBER_NOT_BLOCKED", "Room member is not blocked")
+	case errors.Is(err, room.ErrCannotRemoveOwner):
+		writeAPIError(response, request, http.StatusConflict, "ROOM_OWNER_CANNOT_BE_REMOVED", "Transfer ownership before removing the owner")
 	case errors.Is(err, room.ErrIdempotencyConflict):
 		writeAPIError(response, request, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "Idempotency-Key was already used for another request")
 	default:

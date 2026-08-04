@@ -13,6 +13,7 @@ export interface TelegramWebApp {
   setHeaderColor: (color: string) => void
   setBackgroundColor: (color: string) => void
   setBottomBarColor?: (color: string) => void
+  openTelegramLink?: (url: string) => void
   onEvent: (event: string, handler: TelegramEventHandler) => void
   offEvent: (event: string, handler: TelegramEventHandler) => void
   BackButton: { show: () => void; hide: () => void }
@@ -77,4 +78,24 @@ export function getTelegramWebApp() {
 
 export function getTelegramBootstrapError() {
   return bootstrapError
+}
+
+const TELEGRAM_BOT_USERNAME = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME || 'zhyvoappbot').replace(/^@/, '')
+
+export function telegramRoomLink(slug: string) {
+  return `https://t.me/${TELEGRAM_BOT_USERNAME}?startapp=room_${slug.toUpperCase()}`
+}
+
+export function telegramShareLink(roomName: string, roomURL: string) {
+  const params = new URLSearchParams({
+    url: roomURL,
+    text: `Приєднуйтеся до кімнати «${roomName}» у Zhyvo`,
+  })
+  return `https://t.me/share/url?${params}`
+}
+
+export function openTelegramInvite(roomName: string, roomURL: string) {
+  const url = telegramShareLink(roomName, roomURL)
+  if (webApp?.openTelegramLink) webApp.openTelegramLink(url)
+  else window.open(url, '_blank', 'noopener,noreferrer')
 }

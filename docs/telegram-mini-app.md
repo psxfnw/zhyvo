@@ -30,13 +30,15 @@ Bot token є секретом рівня пароля. Якщо він випа�
 
 ## Deep link кімнати
 
-Після створення short name для Mini App пряме посилання матиме вигляд:
+Для налаштованого Main Mini App пряме посилання має вигляд:
 
 ```text
-https://t.me/<bot_username>/<app_short_name>?startapp=room_<ROOM_CODE>
+https://t.me/zhyvoappbot?startapp=room_<ROOM_CODE>
 ```
 
-Параметр використовується лише для навігації. Доступ до кімнати все одно контролюють серверна сесія, membership та PIN/пароль.
+Frontend генерує це посилання для QR-коду, копіювання, системного меню «Поділитися» і Telegram share picker. Значення `room_<ROOM_CODE>` надходить у `start_param`/`tgWebAppStartParam` та відкриває потрібну кімнату. Доступ усе одно контролюють серверна сесія, membership та PIN/пароль.
+
+Username можна перевизначити під час frontend build через `VITE_TELEGRAM_BOT_USERNAME`; типовим значенням є `zhyvoappbot`.
 
 ## Локальна перевірка
 

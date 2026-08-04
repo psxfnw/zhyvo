@@ -24,6 +24,10 @@ var (
 	ErrAccessDenied        = errors.New("room access denied")
 	ErrNotMember           = errors.New("identity is not a room member")
 	ErrOwnerRequired       = errors.New("room owner permission required")
+	ErrMemberNotFound      = errors.New("room member not found")
+	ErrMemberBlocked       = errors.New("identity is blocked from this room")
+	ErrCannotRemoveOwner   = errors.New("room owner cannot be removed")
+	ErrMemberNotBlocked    = errors.New("room member is not blocked")
 	ErrIdempotencyConflict = errors.New("idempotency key was already used with different input")
 )
 
@@ -82,6 +86,27 @@ type Member struct {
 	Role        string    `json:"role"`
 	JoinedAt    time.Time `json:"joined_at"`
 	LastSeenAt  time.Time `json:"last_seen_at"`
+}
+
+type BlockedMember struct {
+	ID          uuid.UUID `json:"id"`
+	DisplayName string    `json:"display_name"`
+	BlockedAt   time.Time `json:"blocked_at"`
+}
+
+type MembersResult struct {
+	Members []Member        `json:"members"`
+	Blocked []BlockedMember `json:"blocked_members"`
+}
+
+type ActivityEvent struct {
+	ID                 uuid.UUID  `json:"id"`
+	Type               string     `json:"type"`
+	ActorID            uuid.UUID  `json:"actor_id"`
+	ActorDisplayName   string     `json:"actor_display_name"`
+	SubjectID          *uuid.UUID `json:"subject_id,omitempty"`
+	SubjectDisplayName *string    `json:"subject_display_name,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 func NewService(db *pgxpool.Pool) *Service {
@@ -155,6 +180,9 @@ func (s *Service) Create(ctx context.Context, ownerID, idempotencyKey uuid.UUID,
 	`, created.ID, ownerID, now); err != nil {
 		return Room{}, fmt.Errorf("add room owner: %w", err)
 	}
+	if err := recordEvent(ctx, tx, created.ID, "room_created", ownerID, nil); err != nil {
+		return Room{}, err
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE room_creation_requests SET room_id = $1
 		WHERE identity_id = $2 AND idempotency_key = $3
@@ -222,13 +250,13 @@ func (s *Service) List(ctx context.Context, identityID uuid.UUID) ([]Room, error
 	return result, nil
 }
 
-func (s *Service) Members(ctx context.Context, identityID uuid.UUID, slug string) ([]Member, error) {
+func (s *Service) Members(ctx context.Context, identityID uuid.UUID, slug string) (MembersResult, error) {
 	currentRoom, err := s.Get(ctx, identityID, slug)
 	if err != nil {
-		return nil, err
+		return MembersResult{}, err
 	}
 	if currentRoom.Role != "owner" {
-		return nil, ErrOwnerRequired
+		return MembersResult{}, ErrOwnerRequired
 	}
 
 	rows, err := s.db.Query(ctx, `
@@ -239,33 +267,66 @@ func (s *Service) Members(ctx context.Context, identityID uuid.UUID, slug string
 		ORDER BY CASE WHEN rm.role = 'owner' THEN 0 ELSE 1 END, rm.joined_at ASC
 	`, currentRoom.ID)
 	if err != nil {
-		return nil, fmt.Errorf("list room members: %w", err)
+		return MembersResult{}, fmt.Errorf("list room members: %w", err)
 	}
-	defer rows.Close()
 
-	result := make([]Member, 0)
+	members := make([]Member, 0)
 	for rows.Next() {
 		var member Member
 		if err := rows.Scan(&member.ID, &member.DisplayName, &member.Role, &member.JoinedAt, &member.LastSeenAt); err != nil {
-			return nil, fmt.Errorf("scan room member: %w", err)
+			rows.Close()
+			return MembersResult{}, fmt.Errorf("scan room member: %w", err)
 		}
-		result = append(result, member)
+		members = append(members, member)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate room members: %w", err)
+		rows.Close()
+		return MembersResult{}, fmt.Errorf("iterate room members: %w", err)
 	}
-	return result, nil
+	rows.Close()
+
+	blockedRows, err := s.db.Query(ctx, `
+		SELECT i.id, i.display_name, rb.created_at
+		FROM room_bans rb
+		JOIN identities i ON i.id = rb.identity_id
+		WHERE rb.room_id = $1
+		ORDER BY rb.created_at DESC
+	`, currentRoom.ID)
+	if err != nil {
+		return MembersResult{}, fmt.Errorf("list blocked room members: %w", err)
+	}
+	defer blockedRows.Close()
+
+	blocked := make([]BlockedMember, 0)
+	for blockedRows.Next() {
+		var member BlockedMember
+		if err := blockedRows.Scan(&member.ID, &member.DisplayName, &member.BlockedAt); err != nil {
+			return MembersResult{}, fmt.Errorf("scan blocked room member: %w", err)
+		}
+		blocked = append(blocked, member)
+	}
+	if err := blockedRows.Err(); err != nil {
+		return MembersResult{}, fmt.Errorf("iterate blocked room members: %w", err)
+	}
+	return MembersResult{Members: members, Blocked: blocked}, nil
 }
 
 func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret string) (Room, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return Room{}, fmt.Errorf("begin join room transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	var roomID uuid.UUID
 	var accessMode, status string
 	var secretHash *string
 	var expiresAt time.Time
-	err := s.db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT id, access_mode, access_secret_hash, status, expires_at
 		FROM rooms
 		WHERE slug = $1
+		FOR UPDATE
 	`, normalizeSlug(slug)).Scan(&roomID, &accessMode, &secretHash, &status, &expiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Room{}, ErrNotFound
@@ -275,6 +336,17 @@ func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret s
 	}
 	if status != "active" || !expiresAt.After(s.now()) {
 		return Room{}, ErrExpired
+	}
+	var blocked bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM room_bans WHERE room_id = $1 AND identity_id = $2
+		)
+	`, roomID, identityID).Scan(&blocked); err != nil {
+		return Room{}, fmt.Errorf("check room block: %w", err)
+	}
+	if blocked {
+		return Room{}, ErrMemberBlocked
 	}
 	if accessMode != "public" {
 		if secretHash == nil {
@@ -289,13 +361,29 @@ func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret s
 		}
 	}
 
-	if _, err := s.db.Exec(ctx, `
+	var alreadyMember bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM room_members WHERE room_id = $1 AND identity_id = $2
+		)
+	`, roomID, identityID).Scan(&alreadyMember); err != nil {
+		return Room{}, fmt.Errorf("check room membership: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO room_members (room_id, identity_id, role)
 		VALUES ($1, $2, 'member')
 		ON CONFLICT (room_id, identity_id)
 		DO UPDATE SET last_seen_at = now()
 	`, roomID, identityID); err != nil {
 		return Room{}, fmt.Errorf("join room: %w", err)
+	}
+	if !alreadyMember {
+		if err := recordEvent(ctx, tx, roomID, "member_joined", identityID, nil); err != nil {
+			return Room{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Room{}, fmt.Errorf("commit room join: %w", err)
 	}
 	return s.Get(ctx, identityID, slug)
 }
@@ -402,10 +490,170 @@ func (s *Service) Update(ctx context.Context, identityID uuid.UUID, slug string,
 	); err != nil {
 		return Room{}, fmt.Errorf("update room: %w", err)
 	}
+	if err := recordEvent(ctx, tx, roomID, "room_updated", identityID, nil); err != nil {
+		return Room{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Room{}, err
 	}
 	return s.Get(ctx, identityID, slug)
+}
+
+func (s *Service) RemoveMember(ctx context.Context, ownerID uuid.UUID, slug string, memberID uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin remove member transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	roomID, err := s.lockOwnedRoom(ctx, tx, ownerID, slug)
+	if err != nil {
+		return err
+	}
+	var role string
+	err = tx.QueryRow(ctx, `
+		SELECT role FROM room_members WHERE room_id = $1 AND identity_id = $2
+	`, roomID, memberID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrMemberNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("find member to remove: %w", err)
+	}
+	if role == "owner" {
+		return ErrCannotRemoveOwner
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM room_members WHERE room_id = $1 AND identity_id = $2
+	`, roomID, memberID); err != nil {
+		return fmt.Errorf("remove room member: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO room_bans (room_id, identity_id, banned_by_identity_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (room_id, identity_id)
+		DO UPDATE SET banned_by_identity_id = EXCLUDED.banned_by_identity_id, created_at = now()
+	`, roomID, memberID, ownerID); err != nil {
+		return fmt.Errorf("block removed room member: %w", err)
+	}
+	if err := recordEvent(ctx, tx, roomID, "member_removed", ownerID, &memberID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit remove member: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) UnblockMember(ctx context.Context, ownerID uuid.UUID, slug string, memberID uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin unblock member transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	roomID, err := s.lockOwnedRoom(ctx, tx, ownerID, slug)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `
+		DELETE FROM room_bans WHERE room_id = $1 AND identity_id = $2
+	`, roomID, memberID)
+	if err != nil {
+		return fmt.Errorf("unblock room member: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrMemberNotBlocked
+	}
+	if err := recordEvent(ctx, tx, roomID, "member_unblocked", ownerID, &memberID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit unblock member: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) TransferOwnership(ctx context.Context, ownerID uuid.UUID, slug string, memberID uuid.UUID) (Room, error) {
+	if ownerID == memberID {
+		return Room{}, fmt.Errorf("%w: select another room member", ErrInvalidInput)
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return Room{}, fmt.Errorf("begin ownership transfer transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	roomID, err := s.lockOwnedRoom(ctx, tx, ownerID, slug)
+	if err != nil {
+		return Room{}, err
+	}
+	var targetRole string
+	err = tx.QueryRow(ctx, `
+		SELECT role FROM room_members WHERE room_id = $1 AND identity_id = $2 FOR UPDATE
+	`, roomID, memberID).Scan(&targetRole)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Room{}, ErrMemberNotFound
+	}
+	if err != nil {
+		return Room{}, fmt.Errorf("find ownership recipient: %w", err)
+	}
+	if targetRole != "member" {
+		return Room{}, fmt.Errorf("%w: select a regular room member", ErrInvalidInput)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE room_members SET role = 'member' WHERE room_id = $1 AND identity_id = $2`, roomID, ownerID); err != nil {
+		return Room{}, fmt.Errorf("demote previous room owner: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE room_members SET role = 'owner' WHERE room_id = $1 AND identity_id = $2`, roomID, memberID); err != nil {
+		return Room{}, fmt.Errorf("promote new room owner: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE rooms SET owner_identity_id = $2 WHERE id = $1`, roomID, memberID); err != nil {
+		return Room{}, fmt.Errorf("update room owner: %w", err)
+	}
+	if err := recordEvent(ctx, tx, roomID, "ownership_transferred", ownerID, &memberID); err != nil {
+		return Room{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Room{}, fmt.Errorf("commit ownership transfer: %w", err)
+	}
+	return s.Get(ctx, ownerID, slug)
+}
+
+func (s *Service) Activity(ctx context.Context, identityID uuid.UUID, slug string) ([]ActivityEvent, error) {
+	currentRoom, err := s.Get(ctx, identityID, slug)
+	if err != nil {
+		return nil, err
+	}
+	if currentRoom.Role != "owner" {
+		return nil, ErrOwnerRequired
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, event_type, actor_identity_id, actor_display_name,
+		       subject_identity_id, subject_display_name, created_at
+		FROM room_events
+		WHERE room_id = $1
+		ORDER BY created_at DESC, id DESC
+		LIMIT 100
+	`, currentRoom.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list room activity: %w", err)
+	}
+	defer rows.Close()
+	result := make([]ActivityEvent, 0)
+	for rows.Next() {
+		var event ActivityEvent
+		if err := rows.Scan(
+			&event.ID, &event.Type, &event.ActorID, &event.ActorDisplayName,
+			&event.SubjectID, &event.SubjectDisplayName, &event.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan room activity: %w", err)
+		}
+		result = append(result, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate room activity: %w", err)
+	}
+	return result, nil
 }
 
 func (s *Service) Delete(ctx context.Context, identityID uuid.UUID, slug string) error {
@@ -442,6 +690,52 @@ func (s *Service) Delete(ctx context.Context, identityID uuid.UUID, slug string)
 	}
 	if result.RowsAffected() != 1 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Service) lockOwnedRoom(ctx context.Context, tx pgx.Tx, identityID uuid.UUID, slug string) (uuid.UUID, error) {
+	var roomID uuid.UUID
+	var role, status string
+	var expiresAt time.Time
+	err := tx.QueryRow(ctx, `
+		SELECT r.id, rm.role, r.status, r.expires_at
+		FROM rooms r
+		JOIN room_members rm ON rm.room_id = r.id AND rm.identity_id = $1
+		WHERE r.slug = $2
+		FOR UPDATE OF r
+	`, identityID, normalizeSlug(slug)).Scan(&roomID, &role, &status, &expiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrNotFound
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("lock owned room: %w", err)
+	}
+	if role != "owner" {
+		return uuid.Nil, ErrOwnerRequired
+	}
+	if status != "active" || !expiresAt.After(s.now()) {
+		return uuid.Nil, ErrExpired
+	}
+	return roomID, nil
+}
+
+func recordEvent(ctx context.Context, tx pgx.Tx, roomID uuid.UUID, eventType string, actorID uuid.UUID, subjectID *uuid.UUID) error {
+	result, err := tx.Exec(ctx, `
+		INSERT INTO room_events (
+			room_id, event_type, actor_identity_id, actor_display_name,
+			subject_identity_id, subject_display_name
+		)
+		SELECT $1, $2, actor.id, actor.display_name, subject.id, subject.display_name
+		FROM identities actor
+		LEFT JOIN identities subject ON subject.id = $4
+		WHERE actor.id = $3
+	`, roomID, eventType, actorID, subjectID)
+	if err != nil {
+		return fmt.Errorf("record room event: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return errors.New("record room event actor not found")
 	}
 	return nil
 }

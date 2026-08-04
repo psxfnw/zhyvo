@@ -2,11 +2,13 @@ import { CSSProperties, FormEvent, useCallback, useEffect, useRef, useState } fr
 import {
   ArrowDownToLine,
   ArrowLeft,
+  Ban,
   Check,
   ChevronLeft,
   ChevronRight,
   Clock3,
   Copy,
+  Crown,
   FileImage,
   ImagePlus,
   Images,
@@ -14,6 +16,8 @@ import {
   LogIn,
   Menu,
   RefreshCw,
+  RotateCcw,
+  Send,
   Share2,
   ShieldCheck,
   Smartphone,
@@ -28,12 +32,23 @@ import { QRCodeSVG } from 'qrcode.react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError, ensureIdentity, getSession, media, rooms } from './lib/api'
 import { bytes, errorMessage, normalizeSlug, remaining } from './lib/format'
-import { getTelegramBootstrapError, getTelegramWebApp } from './lib/telegram'
+import { getTelegramBootstrapError, getTelegramWebApp, openTelegramInvite, telegramRoomLink } from './lib/telegram'
 import { uploadFile } from './lib/upload'
-import type { AccessMode, GalleryItem, Room, RoomMember, RoomPreview, Session, UploadProgress } from './types'
+import type { AccessMode, BlockedRoomMember, GalleryItem, Room, RoomActivityEvent, RoomMember, RoomPreview, Session, UploadProgress } from './types'
 
 function uuid() {
   return crypto.randomUUID()
+}
+
+function activityLabel(event: RoomActivityEvent) {
+  switch (event.type) {
+    case 'room_created': return `${event.actor_display_name} створив(ла) кімнату`
+    case 'member_joined': return `${event.actor_display_name} приєднався(-лася) до кімнати`
+    case 'member_removed': return `${event.actor_display_name} видалив(ла) ${event.subject_display_name ?? 'учасника'}`
+    case 'member_unblocked': return `${event.actor_display_name} розблокував(ла) ${event.subject_display_name ?? 'учасника'}`
+    case 'ownership_transferred': return `${event.actor_display_name} передав(ла) права власника ${event.subject_display_name ?? 'учаснику'}`
+    case 'room_updated': return `${event.actor_display_name} змінив(ла) налаштування кімнати`
+  }
 }
 
 function useSession() {
@@ -431,9 +446,10 @@ function GalleryCard({ item, onDelete, onOpen, onError }: {
   )
 }
 
-function ShareDialog({ room, url, onClose, onCopied }: {
+function ShareDialog({ room, webURL, telegramURL, onClose, onCopied }: {
   room: Room
-  url: string
+  webURL: string
+  telegramURL: string
   onClose: () => void
   onCopied: () => void
 }) {
@@ -450,19 +466,21 @@ function ShareDialog({ room, url, onClose, onCopied }: {
 
   async function nativeShare() {
     if (!shareNavigator.share) return
-    try { await shareNavigator.share({ title: room.name, text: `Приєднуйтеся до кімнати «${room.name}» у Zhyvo`, url }) } catch { /* User cancelled the share sheet. */ }
+    try { await shareNavigator.share({ title: room.name, text: `Приєднуйтеся до кімнати «${room.name}» у Zhyvo`, url: telegramURL }) } catch { /* User cancelled the share sheet. */ }
   }
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-title" onMouseDown={(event) => event.stopPropagation()}>
         <header><div><p className="eyebrow">Кімната {room.slug}</p><h2 id="share-title">Запросити друзів</h2></div><button ref={closeRef} className="icon-button" onClick={onClose} aria-label="Закрити"><X /></button></header>
-        <div className="qr-wrap"><QRCodeSVG value={url} size={224} level="M" title={`QR-код кімнати ${room.slug}`} /></div>
-        <p className="share-note">Відскануйте QR-код або надішліть посилання. Для захищеної кімнати PIN чи пароль передайте окремо.</p>
+        <div className="qr-wrap"><QRCodeSVG value={telegramURL} size={224} level="M" title={`QR-код кімнати ${room.slug}`} data-invite-url={telegramURL} /></div>
+        <p className="share-note">QR-код відкриє цю кімнату прямо в Telegram. Для захищеної кімнати PIN чи пароль передайте окремо.</p>
         <div className="share-actions">
-          <button className="secondary-button" onClick={onCopied}><Copy size={18} /> Копіювати посилання</button>
-          {supportsNativeShare && <button className="primary-button" onClick={nativeShare}><Share2 size={18} /> Поділитися</button>}
+          <button className="primary-button share-actions__telegram" onClick={() => openTelegramInvite(room.name, telegramURL)}><Send size={18} /> Надіслати в Telegram</button>
+          <button className="secondary-button" onClick={onCopied}><Copy size={18} /> Копіювати запрошення</button>
+          {supportsNativeShare && <button className="secondary-button" onClick={nativeShare}><Share2 size={18} /> Інші застосунки</button>}
         </div>
+        <a className="browser-invite-link" href={webURL}>Відкрити кімнату у браузері</a>
       </section>
     </div>
   )
@@ -551,6 +569,10 @@ function RoomPage() {
   const [shareDialog, setShareDialog] = useState(false)
   const [membersOpen, setMembersOpen] = useState(false)
   const [members, setMembers] = useState<RoomMember[]>([])
+  const [blockedMembers, setBlockedMembers] = useState<BlockedRoomMember[]>([])
+  const [activity, setActivity] = useState<RoomActivityEvent[]>([])
+  const [membersTab, setMembersTab] = useState<'members' | 'activity'>('members')
+  const [memberActionID, setMemberActionID] = useState<string | null>(null)
   const [membersLoading, setMembersLoading] = useState(false)
   const [membersError, setMembersError] = useState('')
   const selectedMediaID = searchParams.get('media')
@@ -715,7 +737,7 @@ function RoomPage() {
   }
 
   async function copyLink() {
-    const url = `${window.location.origin}/r/${slug}`
+    const url = telegramRoomLink(slug)
     await navigator.clipboard.writeText(url)
     setCopied(true)
     setShareDialog(false)
@@ -733,15 +755,67 @@ function RoomPage() {
   async function openMembers() {
     setSettings(false)
     setMembersOpen(true)
+    setMembersTab('members')
     setMembersLoading(true)
     setMembersError('')
     try {
-      const result = await rooms.members(slug)
-      setMembers(result.members)
+      const [memberResult, activityResult] = await Promise.all([rooms.members(slug), rooms.activity(slug)])
+      setMembers(memberResult.members)
+      setBlockedMembers(memberResult.blocked_members)
+      setActivity(activityResult.events)
     } catch (cause) {
       setMembersError(errorMessage(cause))
     } finally {
       setMembersLoading(false)
+    }
+  }
+
+  async function refreshMembers() {
+    const [memberResult, activityResult] = await Promise.all([rooms.members(slug), rooms.activity(slug)])
+    setMembers(memberResult.members)
+    setBlockedMembers(memberResult.blocked_members)
+    setActivity(activityResult.events)
+  }
+
+  async function removeMember(member: RoomMember) {
+    if (!window.confirm(`Видалити ${member.display_name} з кімнати та заблокувати повторний вхід?`)) return
+    setMemberActionID(member.id)
+    setMembersError('')
+    try {
+      await rooms.removeMember(slug, member.id)
+      await refreshMembers()
+    } catch (cause) {
+      setMembersError(errorMessage(cause))
+    } finally {
+      setMemberActionID(null)
+    }
+  }
+
+  async function unblockMember(member: BlockedRoomMember) {
+    setMemberActionID(member.id)
+    setMembersError('')
+    try {
+      await rooms.unblockMember(slug, member.id)
+      await refreshMembers()
+    } catch (cause) {
+      setMembersError(errorMessage(cause))
+    } finally {
+      setMemberActionID(null)
+    }
+  }
+
+  async function transferOwnership(member: RoomMember) {
+    if (!window.confirm(`Передати кімнату користувачу ${member.display_name}? Ви втратите права власника.`)) return
+    setMemberActionID(member.id)
+    setMembersError('')
+    try {
+      const result = await rooms.transferOwnership(slug, member.id)
+      setRoom(result.room)
+      setMembersOpen(false)
+    } catch (cause) {
+      setMembersError(errorMessage(cause))
+    } finally {
+      setMemberActionID(null)
     }
   }
 
@@ -770,6 +844,7 @@ function RoomPage() {
   const usedPercent = Math.min(100, (room.used_storage_bytes / room.max_storage_bytes) * 100)
   const selectedMedia = gallery.find((item) => item.id === selectedMediaID) ?? null
   const shareURL = `${window.location.origin}/r/${slug}`
+  const telegramInviteURL = telegramRoomLink(slug)
 
   return (
     <main className="room-shell">
@@ -822,22 +897,50 @@ function RoomPage() {
 
       <UploadQueue uploads={uploads} onCancel={cancelUpload} onRetry={retryUpload} />
 
-      {shareDialog && <ShareDialog room={room} url={shareURL} onClose={() => setShareDialog(false)} onCopied={() => void copyLink()} />}
+      {shareDialog && <ShareDialog room={room} webURL={shareURL} telegramURL={telegramInviteURL} onClose={() => setShareDialog(false)} onCopied={() => void copyLink()} />}
 
       {membersOpen && (
         <div className="dialog-backdrop" role="presentation" onMouseDown={() => setMembersOpen(false)}>
           <section className="members-dialog" role="dialog" aria-modal="true" aria-labelledby="members-title" onMouseDown={(event) => event.stopPropagation()}>
-            <header><div><h2 id="members-title">Учасники</h2><p>{membersLoading ? 'Оновлюємо список…' : `${members.length} ${members.length === 1 ? 'учасник' : 'учасники'}`}</p></div><button ref={membersCloseRef} className="icon-button" onClick={() => setMembersOpen(false)} aria-label="Закрити"><X /></button></header>
+            <header><div><h2 id="members-title">Керування кімнатою</h2><p>{membersLoading ? 'Оновлюємо дані…' : `${members.length} активних · ${blockedMembers.length} заблоковано`}</p></div><button ref={membersCloseRef} className="icon-button" onClick={() => setMembersOpen(false)} aria-label="Закрити"><X /></button></header>
+            <div className="members-tabs" role="tablist" aria-label="Керування кімнатою">
+              <button role="tab" aria-selected={membersTab === 'members'} onClick={() => setMembersTab('members')}>Учасники</button>
+              <button role="tab" aria-selected={membersTab === 'activity'} onClick={() => setMembersTab('activity')}>Історія</button>
+            </div>
             {membersError ? <p className="members-error" role="alert">{membersError}</p> : membersLoading ? <div className="members-loading"><span /><span /><span /></div> : (
-              <div className="members-list">
-                {members.map((member) => (
-                  <div className="member-row" key={member.id}>
-                    <span className="member-avatar" aria-hidden="true">{member.display_name.trim().slice(0, 1).toLocaleUpperCase('uk-UA')}</span>
-                    <div><strong>{member.display_name}</strong><span>Приєднався {new Date(member.joined_at).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })}</span></div>
-                    <small>{member.role === 'owner' ? 'Власник' : 'Учасник'}</small>
-                  </div>
-                ))}
-              </div>
+              membersTab === 'members' ? (
+                <div className="members-list">
+                  {members.map((member) => (
+                    <div className="member-row" key={member.id}>
+                      <span className="member-avatar" aria-hidden="true">{member.display_name.trim().slice(0, 1).toLocaleUpperCase('uk-UA')}</span>
+                      <div><strong>{member.display_name}</strong><span>Приєднався {new Date(member.joined_at).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })}</span></div>
+                      {member.role === 'owner' ? <small>Власник</small> : (
+                        <div className="member-actions">
+                          <button disabled={memberActionID === member.id} onClick={() => void transferOwnership(member)} aria-label={`Передати кімнату користувачу ${member.display_name}`} title="Передати права власника"><Crown size={17} /></button>
+                          <button className="member-action--danger" disabled={memberActionID === member.id} onClick={() => void removeMember(member)} aria-label={`Видалити та заблокувати ${member.display_name}`} title="Видалити та заблокувати"><Ban size={17} /></button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {blockedMembers.length > 0 && <div className="blocked-heading"><strong>Заблоковані</strong><span>Не можуть повторно приєднатися</span></div>}
+                  {blockedMembers.map((member) => (
+                    <div className="member-row member-row--blocked" key={member.id}>
+                      <span className="member-avatar" aria-hidden="true">{member.display_name.trim().slice(0, 1).toLocaleUpperCase('uk-UA')}</span>
+                      <div><strong>{member.display_name}</strong><span>Заблоковано {new Date(member.blocked_at).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })}</span></div>
+                      <button className="unblock-button" disabled={memberActionID === member.id} onClick={() => void unblockMember(member)}><RotateCcw size={16} /> Розблокувати</button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="activity-list">
+                  {activity.length === 0 ? <p>Подій поки немає.</p> : activity.map((event) => (
+                    <div className="activity-row" key={event.id}>
+                      <span aria-hidden="true" />
+                      <div><strong>{activityLabel(event)}</strong><time dateTime={event.created_at}>{new Date(event.created_at).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })}</time></div>
+                    </div>
+                  ))}
+                </div>
+              )
             )}
           </section>
         </div>

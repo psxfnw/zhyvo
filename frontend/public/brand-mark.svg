@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Zhyvo">
+  <defs>
+    <linearGradient id="a" x1="8" y1="4" x2="57" y2="61" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#09A8FF"/>
+      <stop offset=".52" stop-color="#0071E3"/>
+      <stop offset="1" stop-color="#715CFF"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="17" fill="url(#a)"/>
+  <path d="M16 18.5h20.5C45.06 18.5 52 25.44 52 34s-6.94 15.5-15.5 15.5H25v-7h11.5a8.5 8.5 0 1 0 0-17H23v24h-7v-31Z" fill="#fff"/>
+  <circle cx="36.5" cy="34" r="4.3" fill="#fff"/>
+</svg>

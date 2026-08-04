@@ -1,0 +1,92 @@
+export type AccessMode = 'public' | 'pin' | 'password'
+
+export interface Identity {
+  id: string
+  kind: 'anonymous' | 'telegram' | 'account'
+  display_name: string
+}
+
+export interface Session {
+  identity: Identity
+  access_token: string
+  access_token_expires_at: string
+  refresh_token: string
+  refresh_token_expires_at: string
+}
+
+export interface Room {
+  id: string
+  slug: string
+  name: string
+  access_mode: AccessMode
+  role: 'owner' | 'member'
+  status: 'active' | 'deleting'
+  accepting_uploads: boolean
+  max_files: number
+  max_storage_bytes: number
+  used_files: number
+  used_storage_bytes: number
+  created_at: string
+  expires_at: string
+}
+
+export interface RoomPreview {
+  slug: string
+  name: string
+  access_mode: AccessMode
+  status: string
+  expires_at: string
+}
+
+export interface RoomMember {
+  id: string
+  display_name: string
+  role: 'owner' | 'member'
+  joined_at: string
+  last_seen_at: string
+}
+
+export interface GalleryItem {
+  id: string
+  media_type: 'image' | 'video'
+  mime_type: string
+  original_filename: string
+  size_bytes: number
+  width?: number
+  height?: number
+  duration_ms?: number
+  captured_at?: string | null
+  created_at: string
+  thumbnail_url: string | null
+  thumbnail_status: 'pending' | 'ready'
+  uploaded_by: { id: string; display_name: string }
+  permissions: { can_delete: boolean }
+}
+
+export interface GalleryPage {
+  items: GalleryItem[]
+  next_cursor: string | null
+  has_more: boolean
+}
+
+export interface UploadTicket {
+  id: string
+  media_id: string
+  type: 'single' | 'multipart'
+  status: string
+  part_size_bytes?: number
+  parts_count?: number
+  expires_at: string
+  url?: string
+  method?: 'PUT'
+  headers?: Record<string, string>
+}
+
+export interface UploadProgress {
+  id: string
+  filename: string
+  progress: number
+  state: 'queued' | 'uploading' | 'done' | 'error'
+  message?: string
+  canRetry?: boolean
+}

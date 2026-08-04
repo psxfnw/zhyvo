@@ -1,0 +1,197 @@
+package httpapi
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"photodrop/internal/room"
+)
+
+type roomHandler struct {
+	service *room.Service
+}
+
+type createRoomRequest struct {
+	Name         string            `json:"name"`
+	LifetimeDays int               `json:"lifetime_days"`
+	Access       roomAccessRequest `json:"access"`
+}
+
+type roomAccessRequest struct {
+	Mode   string `json:"mode"`
+	Secret string `json:"secret"`
+}
+
+type joinRoomRequest struct {
+	Secret string `json:"secret"`
+}
+
+type updateRoomRequest struct {
+	Name             *string            `json:"name"`
+	AcceptingUploads *bool              `json:"accepting_uploads"`
+	Access           *roomAccessRequest `json:"access"`
+}
+
+func (handler roomHandler) create(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	idempotencyKey, err := uuid.Parse(request.Header.Get("Idempotency-Key"))
+	if err != nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key must be a UUID")
+		return
+	}
+
+	var input createRoomRequest
+	if err := decodeJSON(response, request, &input); err != nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_JSON", "Request body is invalid")
+		return
+	}
+	created, err := handler.service.Create(request.Context(), principal.IdentityID, idempotencyKey, room.CreateInput{
+		Name:         input.Name,
+		LifetimeDays: input.LifetimeDays,
+		AccessMode:   input.Access.Mode,
+		Secret:       input.Access.Secret,
+	})
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusCreated, map[string]any{
+		"room":       created,
+		"share_path": "/r/" + created.Slug,
+	})
+}
+
+func (handler roomHandler) preview(response http.ResponseWriter, request *http.Request) {
+	preview, err := handler.service.Preview(request.Context(), chi.URLParam(request, "slug"))
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, preview)
+}
+
+func (handler roomHandler) list(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	result, err := handler.service.List(request.Context(), principal.IdentityID)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"rooms": result})
+}
+
+func (handler roomHandler) join(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	var input joinRoomRequest
+	if err := decodeJSON(response, request, &input); err != nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_JSON", "Request body is invalid")
+		return
+	}
+	joined, err := handler.service.Join(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), input.Secret)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"room": joined})
+}
+
+func (handler roomHandler) get(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	result, err := handler.service.Get(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"))
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"room": result})
+}
+
+func (handler roomHandler) members(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	result, err := handler.service.Members(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"))
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"members": result})
+}
+
+func (handler roomHandler) update(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	var input updateRoomRequest
+	if err := decodeJSON(response, request, &input); err != nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_JSON", "Request body is invalid")
+		return
+	}
+	var access *room.AccessUpdate
+	if input.Access != nil {
+		access = &room.AccessUpdate{Mode: input.Access.Mode, Secret: input.Access.Secret}
+	}
+	updated, err := handler.service.Update(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), room.UpdateInput{
+		Name: input.Name, AcceptingUploads: input.AcceptingUploads, Access: access,
+	})
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"room": updated})
+}
+
+func (handler roomHandler) delete(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	if err := handler.service.Delete(request.Context(), principal.IdentityID, chi.URLParam(request, "slug")); err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	response.WriteHeader(http.StatusAccepted)
+}
+
+func (handler roomHandler) writeError(response http.ResponseWriter, request *http.Request, err error) {
+	switch {
+	case errors.Is(err, room.ErrInvalidInput):
+		writeAPIError(response, request, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error())
+	case errors.Is(err, room.ErrNotFound):
+		writeAPIError(response, request, http.StatusNotFound, "ROOM_NOT_FOUND", "Room not found")
+	case errors.Is(err, room.ErrExpired):
+		writeAPIError(response, request, http.StatusGone, "ROOM_EXPIRED", "Room has expired")
+	case errors.Is(err, room.ErrAccessDenied):
+		writeAPIError(response, request, http.StatusForbidden, "ROOM_ACCESS_DENIED", "PIN or password is incorrect")
+	case errors.Is(err, room.ErrNotMember):
+		writeAPIError(response, request, http.StatusForbidden, "ROOM_MEMBERSHIP_REQUIRED", "Join the room before accessing it")
+	case errors.Is(err, room.ErrOwnerRequired):
+		writeAPIError(response, request, http.StatusForbidden, "ROOM_OWNER_REQUIRED", "Only the room owner can perform this action")
+	case errors.Is(err, room.ErrIdempotencyConflict):
+		writeAPIError(response, request, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "Idempotency-Key was already used for another request")
+	default:
+		writeAPIError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")
+	}
+}

@@ -1,0 +1,716 @@
+openapi: 3.1.0
+info:
+  title: Zhyvo API
+  version: 0.1.0
+  description: REST API for ephemeral event media rooms. All timestamps are UTC ISO 8601 values.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: /api/v1
+    description: Same-origin API base path
+tags:
+  - name: Auth
+    description: Anonymous identity and device-session lifecycle
+  - name: Rooms
+    description: Ephemeral room creation, access, and owner settings
+  - name: Uploads
+    description: Direct single and multipart object-storage uploads
+  - name: Media
+    description: Gallery, original downloads, and media deletion
+
+paths:
+  /auth/anonymous:
+    post:
+      operationId: createAnonymousSession
+      tags: [Auth]
+      summary: Create an anonymous identity and device session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnonymousAuthRequest'
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/telegram:
+    post:
+      operationId: createTelegramSession
+      tags: [Auth]
+      summary: Validate Telegram Mini App initData and create a device session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TelegramAuthRequest'}
+      responses:
+        '201':
+          description: Telegram identity upserted and session created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenResponse'}
+        '401': {description: initData is invalid or expired}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '503': {description: Telegram authentication is not configured}
+
+  /auth/refresh:
+    post:
+      operationId: refreshSession
+      tags: [Auth]
+      summary: Rotate a refresh token and issue a new access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: {type: string, minLength: 32}
+      responses:
+        '200':
+          description: Token rotated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/me:
+    get:
+      operationId: getCurrentIdentity
+      tags: [Auth]
+      summary: Get the current identity
+      responses:
+        '200':
+          description: Current identity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [identity]
+                properties:
+                  identity: {$ref: '#/components/schemas/Identity'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /auth/session:
+    delete:
+      operationId: revokeCurrentSession
+      tags: [Auth]
+      summary: Revoke the current device session
+      responses:
+        '204': {description: Session revoked}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /rooms:
+    get:
+      operationId: listMyRooms
+      tags: [Rooms]
+      summary: List active rooms joined by the current identity
+      responses:
+        '200':
+          description: Active rooms ordered by recent membership activity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rooms]
+                properties:
+                  rooms:
+                    type: array
+                    items: {$ref: '#/components/schemas/Room'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      operationId: createRoom
+      tags: [Rooms]
+      summary: Create a room
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateRoomRequest'}
+      responses:
+        '201':
+          description: Room created, or the original result of an idempotent retry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [room, share_path]
+                properties:
+                  room: {$ref: '#/components/schemas/Room'}
+                  share_path: {type: string, example: /r/K7MP2Q}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /rooms/{slug}/preview:
+    get:
+      operationId: getRoomPreview
+      tags: [Rooms]
+      summary: Get public room information before joining
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      responses:
+        '200':
+          description: Room preview
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomPreview'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Gone'}
+
+  /rooms/{slug}/join:
+    post:
+      operationId: joinRoom
+      tags: [Rooms]
+      summary: Join a public or protected room
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                secret: {type: string, description: PIN or password; omit for public rooms}
+      responses:
+        '200':
+          description: Room membership created or refreshed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [room]
+                properties:
+                  room: {$ref: '#/components/schemas/Room'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Gone'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /rooms/{slug}:
+    parameters:
+      - $ref: '#/components/parameters/RoomSlug'
+    get:
+      operationId: getRoom
+      tags: [Rooms]
+      summary: Get a room as a member
+      responses:
+        '200':
+          description: Room details
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [room]
+                properties:
+                  room: {$ref: '#/components/schemas/Room'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Gone'}
+    patch:
+      operationId: updateRoom
+      tags: [Rooms]
+      summary: Update room settings as the owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateRoomRequest'}
+      responses:
+        '200':
+          description: Updated room
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [room]
+                properties:
+                  room: {$ref: '#/components/schemas/Room'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '410': {$ref: '#/components/responses/Gone'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    delete:
+      operationId: deleteRoom
+      tags: [Rooms]
+      summary: Schedule immediate room deletion as the owner
+      responses:
+        '202': {description: Room closed and scheduled for background deletion}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /rooms/{slug}/members:
+    get:
+      operationId: listRoomMembers
+      tags: [Rooms]
+      summary: List room participants as the owner
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      responses:
+        '200':
+          description: Room owner and joined participants
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [members]
+                properties:
+                  members:
+                    type: array
+                    items: {$ref: '#/components/schemas/RoomMember'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Gone'}
+
+  /rooms/{slug}/uploads:
+    post:
+      operationId: initiateUpload
+      tags: [Uploads]
+      summary: Reserve capacity and initialize a single or multipart upload
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/InitiateUploadRequest'}
+      responses:
+        '201':
+          description: Upload initialized
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [upload, media_id]
+                properties:
+                  upload: {$ref: '#/components/schemas/Upload'}
+                  media_id: {type: string, format: uuid}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /uploads/{uploadID}/parts:
+    post:
+      operationId: getMultipartPartURLs
+      tags: [Uploads]
+      summary: Issue presigned URLs for a batch of multipart parts
+      parameters:
+        - $ref: '#/components/parameters/UploadID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [part_numbers]
+              properties:
+                part_numbers:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  uniqueItems: true
+                  items: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: Presigned part URLs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [parts]
+                properties:
+                  parts:
+                    type: array
+                    items: {$ref: '#/components/schemas/PartURL'}
+        '410': {$ref: '#/components/responses/Gone'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /uploads/{uploadID}/complete:
+    post:
+      operationId: completeUpload
+      tags: [Uploads]
+      summary: Verify and complete an upload
+      parameters:
+        - $ref: '#/components/parameters/UploadID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                parts:
+                  type: array
+                  description: Required for multipart; omit for a single upload
+                  items: {$ref: '#/components/schemas/CompletedPart'}
+      responses:
+        '200':
+          description: Media is ready and thumbnail processing is queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [media]
+                properties:
+                  media:
+                    type: object
+                    required: [id, status]
+                    properties:
+                      id: {type: string, format: uuid}
+                      status: {type: string, const: ready}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '410': {$ref: '#/components/responses/Gone'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /uploads/{uploadID}:
+    delete:
+      operationId: abortUpload
+      tags: [Uploads]
+      summary: Abort an upload and release its room reservation
+      parameters:
+        - $ref: '#/components/parameters/UploadID'
+      responses:
+        '204': {description: Upload aborted or already inactive}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /rooms/{slug}/media:
+    get:
+      operationId: getRoomGallery
+      tags: [Media]
+      summary: Get a cursor-paginated gallery
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+        - name: cursor
+          in: query
+          schema: {type: string}
+      responses:
+        '200':
+          description: Gallery page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GalleryPage'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
+  /media/{mediaID}/download-url:
+    post:
+      operationId: getMediaDownloadURL
+      tags: [Media]
+      summary: Issue a presigned original download URL
+      parameters:
+        - $ref: '#/components/parameters/MediaID'
+      responses:
+        '200':
+          description: Short-lived download URL
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Download'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /media/{mediaID}:
+    delete:
+      operationId: deleteMedia
+      tags: [Media]
+      summary: Delete media as its uploader or room owner
+      parameters:
+        - $ref: '#/components/parameters/MediaID'
+      responses:
+        '204': {description: Media deleted}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    RoomSlug:
+      name: slug
+      in: path
+      required: true
+      schema: {type: string, minLength: 6, maxLength: 12, pattern: '^[A-Z0-9]+$'}
+    UploadID:
+      name: uploadID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    MediaID:
+      name: mediaID
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, format: uuid}
+
+  responses:
+    Unauthorized:
+      description: Authentication is missing, invalid, expired, or revoked
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    Forbidden:
+      description: The identity does not have permission
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    NotFound:
+      description: Resource not found
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    Gone:
+      description: Room or upload has expired
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    Conflict:
+      description: Current state or idempotency conflict
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    ValidationError:
+      description: Input validation failed
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    RateLimited:
+      description: Too many requests
+      headers:
+        Retry-After: {schema: {type: integer}, description: Suggested wait in seconds}
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code: {type: string, example: ROOM_ACCESS_DENIED}
+            message: {type: string}
+            request_id: {type: string}
+
+    Identity:
+      type: object
+      required: [id, kind, display_name]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [anonymous, telegram, account]}
+        display_name: {type: string, minLength: 1, maxLength: 80}
+
+    AnonymousAuthRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name, client_type]
+      properties:
+        display_name: {type: string, minLength: 1, maxLength: 80}
+        client_type: {type: string, enum: [web, ios, android]}
+
+    TelegramAuthRequest:
+      type: object
+      additionalProperties: false
+      required: [init_data]
+      properties:
+        init_data:
+          type: string
+          minLength: 1
+          description: Raw, unmodified value from Telegram.WebApp.initData
+
+    TokenResponse:
+      type: object
+      required: [identity, access_token, access_token_expires_in, access_token_expires_at, refresh_token, refresh_token_expires_at]
+      properties:
+        identity: {$ref: '#/components/schemas/Identity'}
+        access_token: {type: string}
+        access_token_expires_in: {type: integer, minimum: 0}
+        access_token_expires_at: {type: string, format: date-time}
+        refresh_token: {type: string}
+        refresh_token_expires_at: {type: string, format: date-time}
+
+    RoomAccess:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: {type: string, const: public}
+        - type: object
+          additionalProperties: false
+          required: [mode, secret]
+          properties:
+            mode: {type: string, const: pin}
+            secret: {type: string, pattern: '^[0-9]{4,8}$'}
+        - type: object
+          additionalProperties: false
+          required: [mode, secret]
+          properties:
+            mode: {type: string, const: password}
+            secret: {type: string, minLength: 6, maxLength: 72}
+
+    CreateRoomRequest:
+      type: object
+      additionalProperties: false
+      required: [name, lifetime_days, access]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        lifetime_days: {type: integer, enum: [1, 2, 3]}
+        access: {$ref: '#/components/schemas/RoomAccess'}
+
+    UpdateRoomRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        accepting_uploads: {type: boolean}
+        access: {$ref: '#/components/schemas/RoomAccess'}
+
+    Room:
+      type: object
+      required: [id, slug, name, access_mode, role, status, accepting_uploads, max_files, max_storage_bytes, used_files, used_storage_bytes, created_at, expires_at]
+      properties:
+        id: {type: string, format: uuid}
+        slug: {type: string}
+        name: {type: string}
+        access_mode: {type: string, enum: [public, pin, password]}
+        role: {type: string, enum: [owner, member]}
+        status: {type: string, enum: [active, deleting]}
+        accepting_uploads: {type: boolean}
+        max_files: {type: integer}
+        max_storage_bytes: {type: integer, format: int64}
+        used_files: {type: integer}
+        used_storage_bytes: {type: integer, format: int64}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+
+    RoomPreview:
+      type: object
+      required: [slug, name, access_mode, status, expires_at]
+      properties:
+        slug: {type: string}
+        name: {type: string}
+        access_mode: {type: string, enum: [public, pin, password]}
+        status: {type: string}
+        expires_at: {type: string, format: date-time}
+
+    RoomMember:
+      type: object
+      required: [id, display_name, role, joined_at, last_seen_at]
+      properties:
+        id: {type: string, format: uuid}
+        display_name: {type: string}
+        role: {type: string, enum: [owner, member]}
+        joined_at: {type: string, format: date-time}
+        last_seen_at: {type: string, format: date-time}
+
+    InitiateUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [filename, mime_type, size_bytes]
+      properties:
+        filename: {type: string, minLength: 1, maxLength: 255}
+        mime_type: {type: string}
+        size_bytes: {type: integer, format: int64, minimum: 1, maximum: 2147483648}
+        captured_at: {type: [string, 'null'], format: date-time}
+
+    Upload:
+      type: object
+      required: [id, media_id, type, status, expires_at]
+      properties:
+        id: {type: string, format: uuid}
+        media_id: {type: string, format: uuid}
+        type: {type: string, enum: [single, multipart]}
+        status: {type: string, enum: [initiated, uploading, completed, aborted, expired]}
+        part_size_bytes: {type: integer, format: int64}
+        parts_count: {type: integer}
+        expires_at: {type: string, format: date-time}
+        url: {type: string, format: uri}
+        url_expires_at: {type: string, format: date-time}
+        method: {type: string, const: PUT}
+        headers: {type: object, additionalProperties: {type: string}}
+
+    PartURL:
+      type: object
+      required: [part_number, url, expires_at]
+      properties:
+        part_number: {type: integer, minimum: 1}
+        url: {type: string, format: uri}
+        expires_at: {type: string, format: date-time}
+
+    CompletedPart:
+      type: object
+      additionalProperties: false
+      required: [part_number, etag]
+      properties:
+        part_number: {type: integer, minimum: 1}
+        etag: {type: string, minLength: 1, maxLength: 256}
+
+    Uploader:
+      type: object
+      required: [id, display_name]
+      properties:
+        id: {type: string, format: uuid}
+        display_name: {type: string}
+
+    GalleryItem:
+      type: object
+      required: [id, media_type, mime_type, original_filename, size_bytes, created_at, thumbnail_url, thumbnail_status, uploaded_by, permissions]
+      properties:
+        id: {type: string, format: uuid}
+        media_type: {type: string, enum: [image, video]}
+        mime_type: {type: string}
+        original_filename: {type: string}
+        size_bytes: {type: integer, format: int64}
+        width: {type: integer}
+        height: {type: integer}
+        duration_ms: {type: integer, format: int64}
+        captured_at: {type: [string, 'null'], format: date-time}
+        created_at: {type: string, format: date-time}
+        thumbnail_url: {type: [string, 'null'], format: uri}
+        thumbnail_status: {type: string, enum: [pending, ready]}
+        uploaded_by: {$ref: '#/components/schemas/Uploader'}
+        permissions:
+          type: object
+          required: [can_delete]
+          properties:
+            can_delete: {type: boolean}
+
+    GalleryPage:
+      type: object
+      required: [items, next_cursor, has_more]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/GalleryItem'}
+        next_cursor: {type: [string, 'null']}
+        has_more: {type: boolean}
+
+    Download:
+      type: object
+      required: [url, expires_at, filename]
+      properties:
+        url: {type: string, format: uri}
+        expires_at: {type: string, format: date-time}
+        filename: {type: string}
+
+security:
+  - bearerAuth: []

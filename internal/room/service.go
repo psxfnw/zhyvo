@@ -1,0 +1,550 @@
+package room
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+var (
+	ErrInvalidInput        = errors.New("invalid room input")
+	ErrNotFound            = errors.New("room not found")
+	ErrExpired             = errors.New("room expired")
+	ErrAccessDenied        = errors.New("room access denied")
+	ErrNotMember           = errors.New("identity is not a room member")
+	ErrOwnerRequired       = errors.New("room owner permission required")
+	ErrIdempotencyConflict = errors.New("idempotency key was already used with different input")
+)
+
+var pinPattern = regexp.MustCompile(`^[0-9]{4,8}$`)
+
+type Service struct {
+	db  *pgxpool.Pool
+	now func() time.Time
+}
+
+type CreateInput struct {
+	Name         string
+	LifetimeDays int
+	AccessMode   string
+	Secret       string
+}
+
+type AccessUpdate struct {
+	Mode   string
+	Secret string
+}
+
+type UpdateInput struct {
+	Name             *string
+	AcceptingUploads *bool
+	Access           *AccessUpdate
+}
+
+type Room struct {
+	ID               uuid.UUID `json:"id"`
+	Slug             string    `json:"slug"`
+	Name             string    `json:"name"`
+	AccessMode       string    `json:"access_mode"`
+	Role             string    `json:"role"`
+	Status           string    `json:"status"`
+	AcceptingUploads bool      `json:"accepting_uploads"`
+	MaxFiles         int       `json:"max_files"`
+	MaxStorageBytes  int64     `json:"max_storage_bytes"`
+	UsedFiles        int       `json:"used_files"`
+	UsedStorageBytes int64     `json:"used_storage_bytes"`
+	CreatedAt        time.Time `json:"created_at"`
+	ExpiresAt        time.Time `json:"expires_at"`
+}
+
+type Preview struct {
+	Slug       string    `json:"slug"`
+	Name       string    `json:"name"`
+	AccessMode string    `json:"access_mode"`
+	Status     string    `json:"status"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+type Member struct {
+	ID          uuid.UUID `json:"id"`
+	DisplayName string    `json:"display_name"`
+	Role        string    `json:"role"`
+	JoinedAt    time.Time `json:"joined_at"`
+	LastSeenAt  time.Time `json:"last_seen_at"`
+}
+
+func NewService(db *pgxpool.Pool) *Service {
+	return &Service{db: db, now: time.Now}
+}
+
+func (s *Service) Create(ctx context.Context, ownerID, idempotencyKey uuid.UUID, input CreateInput) (Room, error) {
+	input.Name = strings.TrimSpace(input.Name)
+	if err := validateCreate(input); err != nil {
+		return Room{}, err
+	}
+	requestHash := hashCreateInput(input)
+
+	var secretHash *string
+	if input.AccessMode != "public" {
+		hashed, err := hashSecret(input.Secret)
+		if err != nil {
+			return Room{}, err
+		}
+		secretHash = &hashed
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return Room{}, fmt.Errorf("begin create room transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	reservation, err := tx.Exec(ctx, `
+		INSERT INTO room_creation_requests (identity_id, idempotency_key, request_hash)
+		VALUES ($1, $2, $3)
+		ON CONFLICT DO NOTHING
+	`, ownerID, idempotencyKey, requestHash[:])
+	if err != nil {
+		return Room{}, fmt.Errorf("reserve idempotency key: %w", err)
+	}
+	if reservation.RowsAffected() == 0 {
+		room, err := existingIdempotentRoom(ctx, tx, ownerID, idempotencyKey, requestHash)
+		if err != nil {
+			return Room{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return Room{}, fmt.Errorf("commit idempotent room read: %w", err)
+		}
+		return room, nil
+	}
+
+	now := s.now().UTC()
+	expiresAt := now.AddDate(0, 0, input.LifetimeDays)
+	var created Room
+	for attempt := 0; attempt < 8; attempt++ {
+		slug, err := newSlug(6)
+		if err != nil {
+			return Room{}, err
+		}
+		created, err = insertRoom(ctx, tx, slug, ownerID, input, secretHash, now, expiresAt)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return Room{}, fmt.Errorf("insert room: %w", err)
+		}
+		if attempt == 7 {
+			return Room{}, errors.New("generate unique room slug")
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO room_members (room_id, identity_id, role, joined_at, last_seen_at)
+		VALUES ($1, $2, 'owner', $3, $3)
+	`, created.ID, ownerID, now); err != nil {
+		return Room{}, fmt.Errorf("add room owner: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE room_creation_requests SET room_id = $1
+		WHERE identity_id = $2 AND idempotency_key = $3
+	`, created.ID, ownerID, idempotencyKey); err != nil {
+		return Room{}, fmt.Errorf("complete idempotent room request: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Room{}, fmt.Errorf("commit room creation: %w", err)
+	}
+	return created, nil
+}
+
+func (s *Service) Preview(ctx context.Context, slug string) (Preview, error) {
+	var preview Preview
+	err := s.db.QueryRow(ctx, `
+		SELECT slug, name, access_mode, status, expires_at
+		FROM rooms
+		WHERE slug = $1
+	`, normalizeSlug(slug)).Scan(&preview.Slug, &preview.Name, &preview.AccessMode, &preview.Status, &preview.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Preview{}, ErrNotFound
+	}
+	if err != nil {
+		return Preview{}, fmt.Errorf("get room preview: %w", err)
+	}
+	if preview.Status != "active" || !preview.ExpiresAt.After(s.now()) {
+		return Preview{}, ErrExpired
+	}
+	return preview, nil
+}
+
+func (s *Service) List(ctx context.Context, identityID uuid.UUID) ([]Room, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT r.id, r.slug, r.name, r.access_mode, rm.role, r.status,
+		       r.accepting_uploads, r.max_files, r.max_storage_bytes,
+		       r.used_files, r.used_storage_bytes, r.created_at, r.expires_at
+		FROM room_members rm
+		JOIN rooms r ON r.id = rm.room_id
+		WHERE rm.identity_id = $1
+		  AND r.status = 'active'
+		  AND r.expires_at > $2
+		ORDER BY rm.last_seen_at DESC, r.created_at DESC
+		LIMIT 50
+	`, identityID, s.now().UTC())
+	if err != nil {
+		return nil, fmt.Errorf("list rooms: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]Room, 0)
+	for rows.Next() {
+		var item Room
+		if err := rows.Scan(
+			&item.ID, &item.Slug, &item.Name, &item.AccessMode, &item.Role, &item.Status,
+			&item.AcceptingUploads, &item.MaxFiles, &item.MaxStorageBytes,
+			&item.UsedFiles, &item.UsedStorageBytes, &item.CreatedAt, &item.ExpiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan listed room: %w", err)
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate listed rooms: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Service) Members(ctx context.Context, identityID uuid.UUID, slug string) ([]Member, error) {
+	currentRoom, err := s.Get(ctx, identityID, slug)
+	if err != nil {
+		return nil, err
+	}
+	if currentRoom.Role != "owner" {
+		return nil, ErrOwnerRequired
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT i.id, i.display_name, rm.role, rm.joined_at, rm.last_seen_at
+		FROM room_members rm
+		JOIN identities i ON i.id = rm.identity_id
+		WHERE rm.room_id = $1
+		ORDER BY CASE WHEN rm.role = 'owner' THEN 0 ELSE 1 END, rm.joined_at ASC
+	`, currentRoom.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list room members: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]Member, 0)
+	for rows.Next() {
+		var member Member
+		if err := rows.Scan(&member.ID, &member.DisplayName, &member.Role, &member.JoinedAt, &member.LastSeenAt); err != nil {
+			return nil, fmt.Errorf("scan room member: %w", err)
+		}
+		result = append(result, member)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate room members: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret string) (Room, error) {
+	var roomID uuid.UUID
+	var accessMode, status string
+	var secretHash *string
+	var expiresAt time.Time
+	err := s.db.QueryRow(ctx, `
+		SELECT id, access_mode, access_secret_hash, status, expires_at
+		FROM rooms
+		WHERE slug = $1
+	`, normalizeSlug(slug)).Scan(&roomID, &accessMode, &secretHash, &status, &expiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Room{}, ErrNotFound
+	}
+	if err != nil {
+		return Room{}, fmt.Errorf("find room to join: %w", err)
+	}
+	if status != "active" || !expiresAt.After(s.now()) {
+		return Room{}, ErrExpired
+	}
+	if accessMode != "public" {
+		if secretHash == nil {
+			return Room{}, errors.New("protected room has no secret hash")
+		}
+		matches, err := verifySecret(*secretHash, secret)
+		if err != nil {
+			return Room{}, fmt.Errorf("verify room secret: %w", err)
+		}
+		if !matches {
+			return Room{}, ErrAccessDenied
+		}
+	}
+
+	if _, err := s.db.Exec(ctx, `
+		INSERT INTO room_members (room_id, identity_id, role)
+		VALUES ($1, $2, 'member')
+		ON CONFLICT (room_id, identity_id)
+		DO UPDATE SET last_seen_at = now()
+	`, roomID, identityID); err != nil {
+		return Room{}, fmt.Errorf("join room: %w", err)
+	}
+	return s.Get(ctx, identityID, slug)
+}
+
+func (s *Service) Get(ctx context.Context, identityID uuid.UUID, slug string) (Room, error) {
+	var result Room
+	err := s.db.QueryRow(ctx, `
+		SELECT r.id, r.slug, r.name, r.access_mode, rm.role, r.status,
+		       r.accepting_uploads, r.max_files, r.max_storage_bytes,
+		       r.used_files, r.used_storage_bytes, r.created_at, r.expires_at
+		FROM rooms r
+		JOIN room_members rm ON rm.room_id = r.id AND rm.identity_id = $1
+		WHERE r.slug = $2
+	`, identityID, normalizeSlug(slug)).Scan(
+		&result.ID, &result.Slug, &result.Name, &result.AccessMode, &result.Role, &result.Status,
+		&result.AcceptingUploads, &result.MaxFiles, &result.MaxStorageBytes,
+		&result.UsedFiles, &result.UsedStorageBytes, &result.CreatedAt, &result.ExpiresAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var exists bool
+		if checkErr := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM rooms WHERE slug = $1)`, normalizeSlug(slug)).Scan(&exists); checkErr != nil {
+			return Room{}, fmt.Errorf("check room existence: %w", checkErr)
+		}
+		if exists {
+			return Room{}, ErrNotMember
+		}
+		return Room{}, ErrNotFound
+	}
+	if err != nil {
+		return Room{}, fmt.Errorf("get room: %w", err)
+	}
+	if result.Status != "active" || !result.ExpiresAt.After(s.now()) {
+		return Room{}, ErrExpired
+	}
+	return result, nil
+}
+
+func (s *Service) Update(ctx context.Context, identityID uuid.UUID, slug string, input UpdateInput) (Room, error) {
+	if input.Name == nil && input.AcceptingUploads == nil && input.Access == nil {
+		return Room{}, fmt.Errorf("%w: at least one field is required", ErrInvalidInput)
+	}
+	var name string
+	if input.Name != nil {
+		name = strings.TrimSpace(*input.Name)
+		if count := utf8.RuneCountInString(name); count < 1 || count > 120 {
+			return Room{}, fmt.Errorf("%w: name must contain 1 to 120 characters", ErrInvalidInput)
+		}
+	}
+	var accessMode string
+	var accessHash *string
+	if input.Access != nil {
+		accessMode = input.Access.Mode
+		if err := validateAccess(accessMode, input.Access.Secret); err != nil {
+			return Room{}, err
+		}
+		if accessMode != "public" {
+			hashed, err := hashSecret(input.Access.Secret)
+			if err != nil {
+				return Room{}, err
+			}
+			accessHash = &hashed
+		}
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return Room{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var roomID uuid.UUID
+	var role, status string
+	var expiresAt time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT r.id, rm.role, r.status, r.expires_at
+		FROM rooms r
+		JOIN room_members rm ON rm.room_id = r.id AND rm.identity_id = $1
+		WHERE r.slug = $2
+		FOR UPDATE OF r
+	`, identityID, normalizeSlug(slug)).Scan(&roomID, &role, &status, &expiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Room{}, ErrNotFound
+	}
+	if err != nil {
+		return Room{}, err
+	}
+	if role != "owner" {
+		return Room{}, ErrOwnerRequired
+	}
+	if status != "active" || !expiresAt.After(s.now()) {
+		return Room{}, ErrExpired
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE rooms
+		SET name = CASE WHEN $2 THEN $3 ELSE name END,
+		    accepting_uploads = CASE WHEN $4 THEN $5 ELSE accepting_uploads END,
+		    access_mode = CASE WHEN $6 THEN $7 ELSE access_mode END,
+		    access_secret_hash = CASE WHEN $6 THEN $8 ELSE access_secret_hash END
+		WHERE id = $1
+	`, roomID,
+		input.Name != nil, name,
+		input.AcceptingUploads != nil, input.AcceptingUploads,
+		input.Access != nil, accessMode, accessHash,
+	); err != nil {
+		return Room{}, fmt.Errorf("update room: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Room{}, err
+	}
+	return s.Get(ctx, identityID, slug)
+}
+
+func (s *Service) Delete(ctx context.Context, identityID uuid.UUID, slug string) error {
+	var role, status string
+	var expiresAt time.Time
+	err := s.db.QueryRow(ctx, `
+		SELECT rm.role, r.status, r.expires_at
+		FROM rooms r
+		JOIN room_members rm ON rm.room_id = r.id AND rm.identity_id = $1
+		WHERE r.slug = $2
+	`, identityID, normalizeSlug(slug)).Scan(&role, &status, &expiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if role != "owner" {
+		return ErrOwnerRequired
+	}
+	if status == "deleting" {
+		return nil
+	}
+	if !expiresAt.After(s.now()) {
+		return ErrExpired
+	}
+	result, err := s.db.Exec(ctx, `
+		UPDATE rooms
+		SET status = 'deleting', accepting_uploads = false
+		WHERE slug = $1 AND owner_identity_id = $2 AND status = 'active'
+	`, normalizeSlug(slug), identityID)
+	if err != nil {
+		return fmt.Errorf("schedule room deletion: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func validateCreate(input CreateInput) error {
+	if count := utf8.RuneCountInString(input.Name); count < 1 || count > 120 {
+		return fmt.Errorf("%w: name must contain 1 to 120 characters", ErrInvalidInput)
+	}
+	if input.LifetimeDays < 1 || input.LifetimeDays > 3 {
+		return fmt.Errorf("%w: lifetime_days must be 1, 2, or 3", ErrInvalidInput)
+	}
+	return validateAccess(input.AccessMode, input.Secret)
+}
+
+func validateAccess(mode, secret string) error {
+	switch mode {
+	case "public":
+		if secret != "" {
+			return fmt.Errorf("%w: public room cannot have a secret", ErrInvalidInput)
+		}
+	case "pin":
+		if !pinPattern.MatchString(secret) {
+			return fmt.Errorf("%w: PIN must contain 4 to 8 digits", ErrInvalidInput)
+		}
+	case "password":
+		if count := utf8.RuneCountInString(secret); count < 6 || count > 72 {
+			return fmt.Errorf("%w: password must contain 6 to 72 characters", ErrInvalidInput)
+		}
+	default:
+		return fmt.Errorf("%w: access mode must be public, pin, or password", ErrInvalidInput)
+	}
+	return nil
+}
+
+func hashCreateInput(input CreateInput) [32]byte {
+	canonical := fmt.Sprintf("%s\x00%d\x00%s\x00%s", input.Name, input.LifetimeDays, input.AccessMode, input.Secret)
+	return sha256.Sum256([]byte(canonical))
+}
+
+func existingIdempotentRoom(ctx context.Context, tx pgx.Tx, identityID, key uuid.UUID, expectedHash [32]byte) (Room, error) {
+	var storedHash []byte
+	var roomID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		SELECT request_hash, room_id
+		FROM room_creation_requests
+		WHERE identity_id = $1 AND idempotency_key = $2
+	`, identityID, key).Scan(&storedHash, &roomID); err != nil {
+		return Room{}, fmt.Errorf("read idempotent room request: %w", err)
+	}
+	if !bytes.Equal(storedHash, expectedHash[:]) {
+		return Room{}, ErrIdempotencyConflict
+	}
+	var result Room
+	err := tx.QueryRow(ctx, `
+		SELECT r.id, r.slug, r.name, r.access_mode, rm.role, r.status,
+		       r.accepting_uploads, r.max_files, r.max_storage_bytes,
+		       r.used_files, r.used_storage_bytes, r.created_at, r.expires_at
+		FROM rooms r
+		JOIN room_members rm ON rm.room_id = r.id AND rm.identity_id = $1
+		WHERE r.id = $2
+	`, identityID, roomID).Scan(
+		&result.ID, &result.Slug, &result.Name, &result.AccessMode, &result.Role, &result.Status,
+		&result.AcceptingUploads, &result.MaxFiles, &result.MaxStorageBytes,
+		&result.UsedFiles, &result.UsedStorageBytes, &result.CreatedAt, &result.ExpiresAt,
+	)
+	if err != nil {
+		return Room{}, fmt.Errorf("read idempotently created room: %w", err)
+	}
+	return result, nil
+}
+
+func insertRoom(ctx context.Context, tx pgx.Tx, slug string, ownerID uuid.UUID, input CreateInput, secretHash *string, createdAt, expiresAt time.Time) (Room, error) {
+	var result Room
+	result.Role = "owner"
+	err := tx.QueryRow(ctx, `
+		INSERT INTO rooms (
+			slug, name, owner_identity_id, access_mode, access_secret_hash, created_at, expires_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (slug) DO NOTHING
+		RETURNING id, slug, name, access_mode, status, accepting_uploads,
+		          max_files, max_storage_bytes, used_files, used_storage_bytes, created_at, expires_at
+	`, slug, input.Name, ownerID, input.AccessMode, secretHash, createdAt, expiresAt).Scan(
+		&result.ID, &result.Slug, &result.Name, &result.AccessMode, &result.Status,
+		&result.AcceptingUploads, &result.MaxFiles, &result.MaxStorageBytes,
+		&result.UsedFiles, &result.UsedStorageBytes, &result.CreatedAt, &result.ExpiresAt,
+	)
+	return result, err
+}
+
+func newSlug(length int) (string, error) {
+	const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+	random := make([]byte, length)
+	if _, err := rand.Read(random); err != nil {
+		return "", fmt.Errorf("generate room slug: %w", err)
+	}
+	result := make([]byte, length)
+	for index, value := range random {
+		result[index] = alphabet[int(value)%len(alphabet)]
+	}
+	return string(result), nil
+}
+
+func normalizeSlug(slug string) string {
+	return strings.ToUpper(strings.TrimSpace(slug))
+}

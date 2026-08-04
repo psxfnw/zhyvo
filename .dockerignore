@@ -1,0 +1,10 @@
+.git
+.env
+.idea
+.vscode
+bin
+coverage.out
+tmp
+web
+frontend/node_modules
+frontend/dist

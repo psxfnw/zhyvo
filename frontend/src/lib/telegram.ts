@@ -85,7 +85,14 @@ export function initializeTelegram() {
 export async function bootstrapTelegramSession() {
   if (!webApp?.initData) return
   const fingerprint = new URLSearchParams(webApp.initData).get('hash') ?? ''
-  if (fingerprint && getSession()?.identity.kind === 'telegram' && localStorage.getItem(TELEGRAM_SESSION_FINGERPRINT) === fingerprint) return
+  const session = getSession()
+  const refreshExpiresAt = session?.refresh_token_expires_at ? Date.parse(session.refresh_token_expires_at) : 0
+  const reusableSession = session?.identity.kind === 'telegram'
+    && Boolean(session.refresh_token)
+    && refreshExpiresAt > Date.now() + 60_000
+    && fingerprint
+    && localStorage.getItem(TELEGRAM_SESSION_FINGERPRINT) === fingerprint
+  if (reusableSession) return
   try {
     await createTelegramSession(webApp.initData)
     localStorage.setItem(TELEGRAM_SESSION_FINGERPRINT, fingerprint)

@@ -40,7 +40,11 @@ async function parseError(response: Response) {
   const fallback = `Запит завершився з кодом ${response.status}`
   try {
     const body = await response.json() as { error?: { code?: string; message?: string } }
-    return new ApiError(response.status, body.error?.code ?? 'REQUEST_FAILED', body.error?.message ?? fallback)
+    const code = body.error?.code ?? 'REQUEST_FAILED'
+    const message = code === 'AUTH_REQUIRED'
+      ? 'Сесію завершено. Закрийте й повторно відкрийте Zhyvo.'
+      : body.error?.message ?? fallback
+    return new ApiError(response.status, code, message)
   } catch {
     return new ApiError(response.status, 'REQUEST_FAILED', fallback)
   }

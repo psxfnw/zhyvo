@@ -26,6 +26,8 @@ Production username: `@zhyvoappbot` (створено 2026-08-03).
 9. Налаштувати Main Mini App, щоб у профілі бота з'явилася кнопка запуску. Текст кнопки: `Відкрити Zhyvo`.
 10. Відкрити Mini App кнопкою бота. Ім'я користувача має з'явитися автоматично без поля реєстрації.
 
+Перевірка через Bot API `getMe` має повертати `has_main_web_app: true`. Налаштування лише `Menu Button` недостатньо для посилань `?startapp=...`: воно відкриває фіксований URL без параметра кімнати.
+
 Bot token є секретом рівня пароля. Якщо він випадково потрапив у повідомлення, Git або screenshot, його треба одразу перевипустити через BotFather.
 
 ## Deep link кімнати
@@ -37,6 +39,8 @@ https://t.me/zhyvoappbot?startapp=room_<ROOM_CODE>
 ```
 
 Frontend генерує це посилання для QR-коду, копіювання, системного меню «Поділитися» і Telegram share picker. Значення `room_<ROOM_CODE>` надходить у `start_param`/`tgWebAppStartParam` та відкриває потрібну кімнату. Доступ усе одно контролюють серверна сесія, membership та PIN/пароль.
+
+Клієнт читає параметр із `initDataUnsafe.start_param`, підписаного raw `initData` та GET/hash-параметрів Telegram. Це покриває відмінності між Telegram iOS, Android і Desktop, але працює лише якщо для бота дійсно ввімкнено Main Mini App у BotFather.
 
 Username можна перевизначити під час frontend build через `VITE_TELEGRAM_BOT_USERNAME`; типовим значенням є `zhyvoappbot`.
 

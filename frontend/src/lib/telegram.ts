@@ -30,6 +30,32 @@ let webApp: TelegramWebApp | null = null
 let bootstrapError = ''
 const TELEGRAM_SESSION_FINGERPRINT = 'photodrop.telegram.session.v1'
 
+function startParamFromURLParameters(parameters: URLSearchParams) {
+  const direct = parameters.get('tgWebAppStartParam')
+  if (direct) return direct
+  const embeddedInitData = parameters.get('tgWebAppData')
+  return embeddedInitData ? new URLSearchParams(embeddedInitData).get('start_param') ?? '' : ''
+}
+
+export function getTelegramStartParam(candidate = window.Telegram?.WebApp) {
+  const search = new URLSearchParams(location.search)
+  const hash = new URLSearchParams(location.hash.replace(/^#/, ''))
+  const rawInitData = candidate?.initData ? new URLSearchParams(candidate.initData) : null
+  return [
+    candidate?.initDataUnsafe?.start_param,
+    rawInitData?.get('start_param'),
+    startParamFromURLParameters(search),
+    startParamFromURLParameters(hash),
+  ].find((value) => value?.trim())?.trim() ?? ''
+}
+
+function applyTelegramStartRoute(startParam: string) {
+  const slug = startParam.replace(/^room[_-]/i, '').toUpperCase()
+  if (location.pathname === '/' && /^[A-Z0-9]{6,12}$/.test(slug)) {
+    history.replaceState(history.state, '', `/r/${slug}`)
+  }
+}
+
 function applyTheme() {
   if (!webApp) return
   document.documentElement.dataset.telegram = 'true'
@@ -42,6 +68,7 @@ function applyTheme() {
 
 export function initializeTelegram() {
   const candidate = window.Telegram?.WebApp
+  applyTelegramStartRoute(getTelegramStartParam(candidate))
   if (!candidate?.initData) return null
   webApp = candidate
   applyTheme()
@@ -52,11 +79,6 @@ export function initializeTelegram() {
   candidate.setBackgroundColor('#f5f5f7')
   candidate.setBottomBarColor?.('#f5f5f7')
 
-  const startParam = candidate.initDataUnsafe?.start_param ?? new URLSearchParams(location.search).get('tgWebAppStartParam') ?? ''
-  const slug = startParam.replace(/^room[_-]/i, '').toUpperCase()
-  if (location.pathname === '/' && /^[A-Z0-9]{6,12}$/.test(slug)) {
-    history.replaceState(history.state, '', `/r/${slug}`)
-  }
   return candidate
 }
 

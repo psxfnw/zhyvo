@@ -69,6 +69,10 @@ try {
   await page.goto(`${baseURL}/r/${slug}`, { waitUntil: 'networkidle' })
   await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
 
+  await page.goto(`${baseURL}/?tgWebAppStartParam=room_${slug}`, { waitUntil: 'networkidle' })
+  await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
+  if (new URL(page.url()).pathname !== `/r/${slug}`) throw new Error(`Telegram start parameter did not route to room: ${page.url()}`)
+
   const portraitOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   if (portraitOverflow > 1) throw new Error(`375px layout has ${portraitOverflow}px horizontal overflow`)
   await page.screenshot({ path: resolve(artifacts, 'room-375.png'), fullPage: true })
@@ -227,7 +231,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, upload: true, uploadRecovery: true, archive: true, viewer: true, myRooms: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, archive: true, viewer: true, myRooms: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

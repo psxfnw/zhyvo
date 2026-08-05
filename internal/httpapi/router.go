@@ -24,7 +24,9 @@ type Dependencies struct {
 	MediaService        *media.Service
 	ArchiveService      *roomarchive.Service
 	TelegramBotToken    string
+	TelegramBotUsername string
 	TelegramInitDataTTL time.Duration
+	TelegramOIDC        *auth.TelegramOIDC
 }
 
 func NewRouter(dependencies Dependencies) http.Handler {
@@ -53,14 +55,16 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		writeJSON(response, http.StatusOK, map[string]string{"status": "ready"})
 	})
 
-	authAPI := authHandler{service: dependencies.AuthService, telegramBotToken: dependencies.TelegramBotToken, telegramInitDataTTL: dependencies.TelegramInitDataTTL}
+	authAPI := authHandler{service: dependencies.AuthService, telegramBotToken: dependencies.TelegramBotToken, telegramInitDataTTL: dependencies.TelegramInitDataTTL, telegramOIDC: dependencies.TelegramOIDC}
 	router.Route("/api/v1/auth", func(router chi.Router) {
+		router.Get("/telegram/config", authAPI.telegramConfig)
 		router.With(anonymousLimiter.middleware(clientIPKey)).Post("/anonymous", authAPI.createAnonymous)
 		router.With(anonymousLimiter.middleware(clientIPKey)).Post("/telegram", authAPI.createTelegram)
 		router.With(refreshLimiter.middleware(clientIPKey)).Post("/refresh", authAPI.refresh)
 		router.Group(func(router chi.Router) {
 			router.Use(requireAuth(dependencies.Tokens, dependencies.AuthService))
 			router.Get("/me", authAPI.me)
+			router.Post("/telegram/oidc", authAPI.linkTelegramOIDC)
 			router.Delete("/session", authAPI.logout)
 		})
 	})
@@ -69,6 +73,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 	uploadAPI := uploadHandler{service: dependencies.MediaService}
 	archiveAPI := archiveHandler{service: dependencies.ArchiveService}
 	router.Get("/api/v1/rooms/{slug}/preview", roomAPI.preview)
+	router.Get("/invite/{slug}", inviteHandler{rooms: dependencies.RoomService, botUsername: dependencies.TelegramBotUsername}.show)
 	router.Group(func(router chi.Router) {
 		router.Use(requireAuth(dependencies.Tokens, dependencies.AuthService))
 		router.Post("/api/v1/rooms", roomAPI.create)

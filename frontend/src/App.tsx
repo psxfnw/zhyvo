@@ -33,9 +33,11 @@ import { QRCodeSVG } from 'qrcode.react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError, archives, ensureIdentity, getSession, media, rooms } from './lib/api'
 import { bytes, errorMessage, normalizeSlug, remaining } from './lib/format'
-import { getTelegramBootstrapError, getTelegramWebApp, openTelegramInvite, telegramRoomLink } from './lib/telegram'
+import { canShareFiles, fetchShareFile, isMobileDevice, saveRemoteFile, sharePreparedFiles } from './lib/download'
+import { getTelegramBootstrapError, getTelegramWebApp, openTelegramInvite, roomInviteLink, telegramRoomLink } from './lib/telegram'
 import { uploadFile } from './lib/upload'
 import { loadUploadQueue, saveUploadQueue } from './lib/uploadQueue'
+import { completeTelegramLogin, startTelegramLogin } from './lib/telegramLogin'
 import type { AccessMode, BlockedRoomMember, GalleryItem, Room, RoomActivityEvent, RoomArchive, RoomMember, RoomPreview, Session, UploadProgress } from './types'
 
 function uuid() {
@@ -113,6 +115,38 @@ function IdentityField({ value, onChange }: { value: string; onChange: (value: s
         placeholder="Як вас підписати"
       />
     </label>
+  )
+}
+
+function BrowserSessionNotice({ session }: { session: Session }) {
+  const [dismissed, setDismissed] = useState(() => localStorage.getItem(`photodrop.login-notice.${session.identity.id}`) === 'hidden')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  if (dismissed || session.identity.kind !== 'anonymous' || getTelegramWebApp()) return null
+
+  async function login() {
+    setBusy(true)
+    setError('')
+    try {
+      await startTelegramLogin(window.location.pathname + window.location.search)
+    } catch (cause) {
+      setError(errorMessage(cause))
+      setBusy(false)
+    }
+  }
+
+  function dismiss() {
+    localStorage.setItem(`photodrop.login-notice.${session.identity.id}`, 'hidden')
+    setDismissed(true)
+  }
+
+  return (
+    <aside className="browser-session-notice">
+      <div className="browser-session-notice__icon"><Send size={22} /></div>
+      <div><strong>Збережіть доступ до кімнат</strong><p>Зараз профіль зберігається лише в цьому браузері. Підключіть Telegram, щоб відкрити свої кімнати з іншого телефона або комп’ютера.</p>{error && <span role="alert">{error}</span>}</div>
+      <button className="telegram-login-button" onClick={() => void login()} disabled={busy}><Send size={17} /> {busy ? 'Відкриваємо…' : 'Увійти через Telegram'}</button>
+      <button className="notice-close" onClick={dismiss} aria-label="Нагадати пізніше"><X size={17} /></button>
+    </aside>
   )
 }
 
@@ -232,6 +266,8 @@ function HomePage() {
         {session && <ProfileChip session={session} />}
       </header>
 
+      {session && <BrowserSessionNotice session={session} />}
+
       {(roomsLoading || activeRooms.length > 0) && (
         <section className="my-rooms" aria-labelledby="my-rooms-title">
           <header>
@@ -327,6 +363,21 @@ function HomePage() {
   )
 }
 
+function TelegramLoginCallback() {
+  const navigate = useNavigate()
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    completeTelegramLogin(window.location.search).then(({ returnTo }) => {
+      if (active) navigate(returnTo, { replace: true })
+    }).catch((cause) => {
+      if (active) setError(errorMessage(cause))
+    })
+    return () => { active = false }
+  }, [navigate])
+  return <main className="status-page"><Brand />{error ? <><h1>Не вдалося увійти</h1><p>{error}</p><Link className="primary-button" to="/">На головну</Link></> : <><div className="loading-line" /><p>Підключаємо Telegram і переносимо ваші кімнати…</p></>}</main>
+}
+
 function JoinRoom({ preview, onJoined }: { preview: RoomPreview; onJoined: (room: Room) => void }) {
   const session = useSession()
   const [displayName, setDisplayName] = useState('')
@@ -418,11 +469,7 @@ function GalleryCard({ item, onDelete, onOpen, onError }: {
     setBusy(true)
     try {
       const result = await media.download(item.id)
-      const anchor = document.createElement('a')
-      anchor.href = result.url
-      anchor.download = result.filename
-      anchor.rel = 'noopener'
-      anchor.click()
+      await saveRemoteFile({ ...result, mimeType: item.mime_type })
     } catch (cause) {
       onError(errorMessage(cause))
     } finally {
@@ -448,10 +495,149 @@ function GalleryCard({ item, onDelete, onOpen, onError }: {
   )
 }
 
-function ShareDialog({ room, webURL, telegramURL, onClose, onCopied }: {
+const MOBILE_BATCH_FILES = 10
+const MOBILE_BATCH_BYTES = 128 * 1024 * 1024
+
+function MobileSaveDialog({ slug, roomName, onClose, onError }: {
+  slug: string
+  roomName: string
+  onClose: () => void
+  onError: (message: string) => void
+}) {
+  const [items, setItems] = useState<GalleryItem[]>([])
+  const [offset, setOffset] = useState(0)
+  const [prepared, setPrepared] = useState<File[]>([])
+  const [preparing, setPreparing] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [savedOneByOne, setSavedOneByOne] = useState(0)
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const supportsBatchShare = canShareFiles([new File([''], 'zhyvo.jpg', { type: 'image/jpeg' })])
+
+  useEffect(() => {
+    let active = true
+    async function loadItems() {
+      try {
+        const all: GalleryItem[] = []
+        let cursor: string | null = null
+        do {
+          const page = await media.gallery(slug, cursor)
+          all.push(...page.items)
+          cursor = page.has_more ? page.next_cursor : null
+        } while (cursor)
+        if (active) setItems(all)
+      } catch (cause) {
+        if (active) onError(errorMessage(cause))
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    void loadItems()
+    closeRef.current?.focus()
+    return () => { active = false }
+  }, [onError, slug])
+
+  function nextBatch() {
+    const batch: GalleryItem[] = []
+    let total = 0
+    for (const item of items.slice(offset)) {
+      if (batch.length && (batch.length >= MOBILE_BATCH_FILES || total + item.size_bytes > MOBILE_BATCH_BYTES)) break
+      batch.push(item)
+      total += item.size_bytes
+    }
+    return batch
+  }
+
+  async function prepareBatch() {
+    const batch = nextBatch()
+    if (!batch.length) return
+    setPreparing(true)
+    setProgress(0)
+    try {
+      const files: File[] = []
+      for (let index = 0; index < batch.length; index += 1) {
+        const item = batch[index]
+        const remote = await media.download(item.id)
+        files.push(await fetchShareFile({ ...remote, mimeType: item.mime_type }))
+        setProgress(Math.round(((index + 1) / batch.length) * 100))
+      }
+      if (!canShareFiles(files)) throw new Error('Телефон не підтримує передачу цього набору файлів')
+      setPrepared(files)
+    } catch (cause) {
+      onError(errorMessage(cause))
+    } finally {
+      setPreparing(false)
+    }
+  }
+
+  async function shareBatch() {
+    try {
+      await sharePreparedFiles(prepared, `${roomName} — Zhyvo`)
+      setOffset((current) => current + prepared.length)
+      setPrepared([])
+      setProgress(0)
+    } catch (cause) {
+      if (!(cause instanceof DOMException && cause.name === 'AbortError')) onError(errorMessage(cause))
+    }
+  }
+
+  async function saveNextFile() {
+    const item = items[savedOneByOne]
+    if (!item) return
+    try {
+      const remote = await media.download(item.id)
+      await saveRemoteFile({ ...remote, mimeType: item.mime_type })
+      setSavedOneByOne((current) => current + 1)
+    } catch (cause) {
+      onError(errorMessage(cause))
+    }
+  }
+
+  const completed = supportsBatchShare ? offset >= items.length && items.length > 0 : savedOneByOne >= items.length && items.length > 0
+  const batch = nextBatch()
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="mobile-save-dialog" role="dialog" aria-modal="true" aria-labelledby="mobile-save-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <div><p className="eyebrow">Оригінальна якість</p><h2 id="mobile-save-title">Зберегти на телефон</h2></div>
+          <button ref={closeRef} className="icon-button" onClick={onClose} aria-label="Закрити"><X /></button>
+        </header>
+        <div className="mobile-save-body">
+          {loading ? <p className="mobile-save-message">Збираємо список файлів…</p> : completed ? (
+            <div className="mobile-save-complete"><Check size={30} /><strong>Усі файли передано</strong><span>Оберіть «Зберегти у Фото» або Files у системному меню.</span></div>
+          ) : supportsBatchShare ? (
+            <>
+              <div className="mobile-save-summary"><Smartphone size={24} /><div><strong>{items.length - offset} файлів залишилося</strong><span>Передаємо пакетами до {MOBILE_BATCH_FILES}, щоб телефон не зависав.</span></div></div>
+              {preparing && <div className="mobile-save-progress"><span style={{ width: `${progress}%` }} /></div>}
+              {!prepared.length ? (
+                <button className="primary-button" onClick={() => void prepareBatch()} disabled={preparing || !batch.length}>
+                  <ArrowDownToLine size={19} /> {preparing ? `Готуємо… ${progress}%` : `Підготувати ${batch.length} ${batch.length === 1 ? 'файл' : 'файлів'}`}
+                </button>
+              ) : (
+                <button className="primary-button" onClick={() => void shareBatch()}><Share2 size={19} /> Зберегти {prepared.length} файлів</button>
+              )}
+              <p className="field-note">Після підготовки відкриється системне меню телефона — там виберіть збереження у Фото, Галерею або Files.</p>
+            </>
+          ) : (
+            <>
+              <div className="mobile-save-summary"><Smartphone size={24} /><div><strong>{items.length - savedOneByOne} файлів залишилося</strong><span>Telegram попросить підтвердити кожен оригінал окремо.</span></div></div>
+              <button className="primary-button" onClick={() => void saveNextFile()}><ArrowDownToLine size={19} /> Зберегти наступний файл</button>
+            </>
+          )}
+          {!loading && !items.length && <p className="mobile-save-message">У кімнаті немає готових файлів.</p>}
+        </div>
+        <footer><button className="secondary-button" onClick={onClose}>{completed ? 'Готово' : 'Закрити'}</button></footer>
+      </section>
+    </div>
+  )
+}
+
+function ShareDialog({ room, webURL, telegramURL, previewURL, onClose, onCopied }: {
   room: Room
   webURL: string
   telegramURL: string
+  previewURL: string
   onClose: () => void
   onCopied: () => void
 }) {
@@ -468,7 +654,7 @@ function ShareDialog({ room, webURL, telegramURL, onClose, onCopied }: {
 
   async function nativeShare() {
     if (!shareNavigator.share) return
-    try { await shareNavigator.share({ title: room.name, text: `Приєднуйтеся до кімнати «${room.name}» у Zhyvo`, url: telegramURL }) } catch { /* User cancelled the share sheet. */ }
+    try { await shareNavigator.share({ title: room.name, text: `Приєднуйтеся до кімнати «${room.name}» у Zhyvo`, url: previewURL }) } catch { /* User cancelled the share sheet. */ }
   }
 
   return (
@@ -478,7 +664,7 @@ function ShareDialog({ room, webURL, telegramURL, onClose, onCopied }: {
         <div className="qr-wrap"><QRCodeSVG value={telegramURL} size={224} level="M" title={`QR-код кімнати ${room.slug}`} data-invite-url={telegramURL} /></div>
         <p className="share-note">QR-код відкриє цю кімнату прямо в Telegram. Для захищеної кімнати PIN чи пароль передайте окремо.</p>
         <div className="share-actions">
-          <button className="primary-button share-actions__telegram" onClick={() => openTelegramInvite(room.name, telegramURL)}><Send size={18} /> Надіслати в Telegram</button>
+          <button className="primary-button share-actions__telegram" onClick={() => openTelegramInvite(room.name, previewURL)}><Send size={18} /> Надіслати в Telegram</button>
           <button className="secondary-button" onClick={onCopied}><Copy size={18} /> Копіювати запрошення</button>
           {supportsNativeShare && <button className="secondary-button" onClick={nativeShare}><Share2 size={18} /> Інші застосунки</button>}
         </div>
@@ -529,7 +715,7 @@ function MediaViewer({ item, items, onSelect, onClose, onError }: {
       <header className="viewer-topbar">
         <div><strong id="viewer-title">{item.original_filename}</strong><span>{item.uploaded_by.display_name} · {bytes(item.size_bytes)}</span></div>
         <div className="viewer-actions">
-          {source && <a className="icon-button" href={source.url} download={source.filename} aria-label="Завантажити оригінал"><ArrowDownToLine /></a>}
+          {source && <button className="icon-button" onClick={() => void saveRemoteFile({ ...source, mimeType: item.mime_type }).catch((cause) => onError(errorMessage(cause)))} aria-label="Завантажити оригінал"><ArrowDownToLine /></button>}
           <button ref={closeRef} className="icon-button" onClick={onClose} aria-label="Закрити перегляд"><X /></button>
         </div>
       </header>
@@ -580,6 +766,7 @@ function RoomPage() {
   const [activity, setActivity] = useState<RoomActivityEvent[]>([])
   const [roomArchive, setRoomArchive] = useState<RoomArchive | null>(null)
   const [archiveBusy, setArchiveBusy] = useState(false)
+  const [mobileSaveOpen, setMobileSaveOpen] = useState(false)
   const [membersTab, setMembersTab] = useState<'members' | 'activity'>('members')
   const [memberActionID, setMemberActionID] = useState<string | null>(null)
   const [membersLoading, setMembersLoading] = useState(false)
@@ -819,7 +1006,7 @@ function RoomPage() {
   }
 
   async function copyLink() {
-    const url = telegramRoomLink(slug)
+    const url = roomInviteLink(slug)
     await navigator.clipboard.writeText(url)
     setCopied(true)
     setShareDialog(false)
@@ -954,6 +1141,7 @@ function RoomPage() {
   const selectedMedia = gallery.find((item) => item.id === selectedMediaID) ?? null
   const shareURL = `${window.location.origin}/r/${slug}`
   const telegramInviteURL = telegramRoomLink(slug)
+  const previewInviteURL = roomInviteLink(slug)
 
   return (
     <main className="room-shell">
@@ -980,10 +1168,10 @@ function RoomPage() {
         <div><h2>Галерея</h2><p>{bytes(room.used_storage_bytes)} використано</p></div>
         <div className="gallery-toolbar__actions">
           {gallery.length > 0 && (
-            <button className="secondary-button primary-button--fit archive-button" onClick={() => void handleArchive()} disabled={archiveBusy || roomArchive?.status === 'pending' || roomArchive?.status === 'processing'} aria-label="Завантажити всю галерею">
-              <Archive size={19} />
-              <small>ZIP</small>
-              <span>{roomArchive?.status === 'ready' ? 'Завантажити ZIP' : roomArchive?.status === 'failed' ? 'Повторити ZIP' : roomArchive ? `${roomArchive.processed_files}/${roomArchive.total_files}` : 'Завантажити все'}</span>
+            <button className="secondary-button primary-button--fit archive-button" onClick={() => isMobileDevice() ? setMobileSaveOpen(true) : void handleArchive()} disabled={!isMobileDevice() && (archiveBusy || roomArchive?.status === 'pending' || roomArchive?.status === 'processing')} aria-label="Завантажити всю галерею">
+              {isMobileDevice() ? <Smartphone size={19} /> : <Archive size={19} />}
+              <small>{isMobileDevice() ? 'Усе' : 'ZIP'}</small>
+              <span>{isMobileDevice() ? 'Зберегти на телефон' : roomArchive?.status === 'ready' ? 'Завантажити ZIP' : roomArchive?.status === 'failed' ? 'Повторити ZIP' : roomArchive ? `${roomArchive.processed_files}/${roomArchive.total_files}` : 'Завантажити все'}</span>
             </button>
           )}
           {room.accepting_uploads ? (
@@ -1021,7 +1209,8 @@ function RoomPage() {
 
       <UploadQueue uploads={uploads} onCancel={cancelUpload} onRetry={retryUpload} />
 
-      {shareDialog && <ShareDialog room={room} webURL={shareURL} telegramURL={telegramInviteURL} onClose={() => setShareDialog(false)} onCopied={() => void copyLink()} />}
+      {shareDialog && <ShareDialog room={room} webURL={shareURL} telegramURL={telegramInviteURL} previewURL={previewInviteURL} onClose={() => setShareDialog(false)} onCopied={() => void copyLink()} />}
+      {mobileSaveOpen && <MobileSaveDialog slug={slug} roomName={room.name} onClose={() => setMobileSaveOpen(false)} onError={setError} />}
 
       {membersOpen && (
         <div className="dialog-backdrop" role="presentation" onMouseDown={() => setMembersOpen(false)}>
@@ -1095,6 +1284,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/r/:slug" element={<RoomPage />} />
+        <Route path="/auth/telegram/callback" element={<TelegramLoginCallback />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </>

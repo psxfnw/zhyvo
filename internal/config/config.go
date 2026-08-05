@@ -20,8 +20,11 @@ type Config struct {
 }
 
 type TelegramConfig struct {
-	BotToken    string
-	InitDataTTL time.Duration
+	BotToken          string
+	BotUsername       string
+	LoginClientID     string
+	LoginClientSecret string
+	InitDataTTL       time.Duration
 }
 
 type S3Config struct {
@@ -113,8 +116,11 @@ func Load() (Config, error) {
 			Issuer:       value("AUTH_ISSUER", "photodrop"),
 		},
 		Telegram: TelegramConfig{
-			BotToken:    os.Getenv("TELEGRAM_BOT_TOKEN"),
-			InitDataTTL: telegramInitDataTTL,
+			BotToken:          os.Getenv("TELEGRAM_BOT_TOKEN"),
+			BotUsername:       value("TELEGRAM_BOT_USERNAME", "zhyvoappbot"),
+			LoginClientID:     os.Getenv("TELEGRAM_LOGIN_CLIENT_ID"),
+			LoginClientSecret: os.Getenv("TELEGRAM_LOGIN_CLIENT_SECRET"),
+			InitDataTTL:       telegramInitDataTTL,
 		},
 	}
 

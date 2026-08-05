@@ -48,6 +48,7 @@ func run(logger *slog.Logger) error {
 	}
 	tokens := auth.NewTokenManager(cfg.Auth.AccessSecret, cfg.Auth.Issuer, cfg.Auth.AccessTTL)
 	authService := auth.NewService(db, tokens, cfg.Auth.RefreshTTL)
+	telegramOIDC := auth.NewTelegramOIDC(cfg.Telegram.LoginClientID, cfg.Telegram.LoginClientSecret)
 	roomService := room.NewService(db)
 	mediaService := media.NewService(db, store)
 	archiveService := roomarchive.NewService(db, store)
@@ -63,7 +64,9 @@ func run(logger *slog.Logger) error {
 			MediaService:        mediaService,
 			ArchiveService:      archiveService,
 			TelegramBotToken:    cfg.Telegram.BotToken,
+			TelegramBotUsername: cfg.Telegram.BotUsername,
 			TelegramInitDataTTL: cfg.Telegram.InitDataTTL,
+			TelegramOIDC:        telegramOIDC,
 		}),
 		ReadHeaderTimeout: cfg.ShutdownTimeout,
 	}

@@ -19,6 +19,7 @@ import (
 var (
 	ErrInvalidInput        = errors.New("invalid input")
 	ErrInvalidRefreshToken = errors.New("invalid refresh token")
+	ErrIdentityLinkDenied  = errors.New("identity cannot be linked")
 )
 
 type Service struct {
@@ -130,6 +131,141 @@ func (s *Service) CreateTelegram(ctx context.Context, user TelegramUser) (Sessio
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return SessionTokens{}, fmt.Errorf("commit Telegram auth transaction: %w", err)
+	}
+	return s.issue(identity, sessionID, refreshToken, refreshExpiry)
+}
+
+// LinkTelegram upgrades an anonymous browser identity to a stable Telegram
+// identity without losing room ownership, memberships or uploaded media.
+func (s *Service) LinkTelegram(ctx context.Context, sourceID uuid.UUID, user TelegramUser) (SessionTokens, error) {
+	if user.ID <= 0 {
+		return SessionTokens{}, fmt.Errorf("%w: invalid Telegram user", ErrInvalidInput)
+	}
+	refreshToken, refreshHash, err := newRefreshToken()
+	if err != nil {
+		return SessionTokens{}, err
+	}
+	now := s.now().UTC()
+	refreshExpiry := now.Add(s.refreshTTL)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return SessionTokens{}, fmt.Errorf("begin identity link transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var sourceKind string
+	if err := tx.QueryRow(ctx, `SELECT kind FROM identities WHERE id = $1 FOR UPDATE`, sourceID).Scan(&sourceKind); err != nil {
+		return SessionTokens{}, fmt.Errorf("find source identity: %w", err)
+	}
+	if sourceKind != "anonymous" {
+		return SessionTokens{}, ErrIdentityLinkDenied
+	}
+
+	identity := Identity{Kind: "telegram", DisplayName: user.DisplayName()}
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO identities (kind, display_name, telegram_user_id, created_at, last_seen_at)
+		VALUES ('telegram', $1, $2, $3, $3)
+		ON CONFLICT (telegram_user_id) WHERE telegram_user_id IS NOT NULL
+		DO UPDATE SET display_name = EXCLUDED.display_name, last_seen_at = EXCLUDED.last_seen_at
+		RETURNING id, kind, display_name
+	`, identity.DisplayName, user.ID, now).Scan(&identity.ID, &identity.Kind, &identity.DisplayName); err != nil {
+		return SessionTokens{}, fmt.Errorf("upsert linked Telegram identity: %w", err)
+	}
+
+	// A Telegram identity may already be a member of a room created in this
+	// browser. Remove the duplicate membership before transferring ownership.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM room_members target
+		USING rooms owned
+		WHERE owned.owner_identity_id = $1
+		  AND target.room_id = owned.id
+		  AND target.identity_id = $2
+	`, sourceID, identity.ID); err != nil {
+		return SessionTokens{}, fmt.Errorf("remove duplicate owner memberships: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM room_bans target
+		USING rooms owned
+		WHERE owned.owner_identity_id = $1
+		  AND target.room_id = owned.id
+		  AND target.identity_id = $2
+	`, sourceID, identity.ID); err != nil {
+		return SessionTokens{}, fmt.Errorf("remove obsolete owner bans: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE room_members SET identity_id = $2 WHERE identity_id = $1 AND role = 'owner'`, sourceID, identity.ID); err != nil {
+		return SessionTokens{}, fmt.Errorf("transfer owner memberships: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE rooms SET owner_identity_id = $2 WHERE owner_identity_id = $1`, sourceID, identity.ID); err != nil {
+		return SessionTokens{}, fmt.Errorf("transfer owned rooms: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO room_members (room_id, identity_id, role, joined_at, last_seen_at)
+		SELECT room_id, $2, role, joined_at, last_seen_at
+		FROM room_members source
+		WHERE identity_id = $1
+		  AND NOT EXISTS (SELECT 1 FROM room_bans ban WHERE ban.room_id = source.room_id AND ban.identity_id = $2)
+		ON CONFLICT (room_id, identity_id) DO UPDATE
+		SET last_seen_at = GREATEST(room_members.last_seen_at, EXCLUDED.last_seen_at)
+	`, sourceID, identity.ID); err != nil {
+		return SessionTokens{}, fmt.Errorf("merge room memberships: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM room_members WHERE identity_id = $1`, sourceID); err != nil {
+		return SessionTokens{}, fmt.Errorf("remove merged memberships: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO room_bans (room_id, identity_id, banned_by_identity_id, created_at)
+		SELECT source.room_id, $2, CASE WHEN source.banned_by_identity_id = $1 THEN $2 ELSE source.banned_by_identity_id END, source.created_at
+		FROM room_bans source
+		WHERE source.identity_id = $1
+		  AND NOT EXISTS (SELECT 1 FROM room_members member WHERE member.room_id = source.room_id AND member.identity_id = $2)
+		ON CONFLICT (room_id, identity_id) DO NOTHING
+	`, sourceID, identity.ID); err != nil {
+		return SessionTokens{}, fmt.Errorf("merge room bans: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM room_bans WHERE identity_id = $1`, sourceID); err != nil {
+		return SessionTokens{}, fmt.Errorf("remove merged room bans: %w", err)
+	}
+
+	updates := []struct {
+		name string
+		sql  string
+	}{
+		{"media uploaders", `UPDATE media SET uploader_identity_id = $2 WHERE uploader_identity_id = $1`},
+		{"upload sessions", `UPDATE upload_sessions SET identity_id = $2 WHERE identity_id = $1`},
+		{"room events actors", `UPDATE room_events SET actor_identity_id = $2 WHERE actor_identity_id = $1`},
+		{"room events subjects", `UPDATE room_events SET subject_identity_id = $2 WHERE subject_identity_id = $1`},
+		{"room ban moderators", `UPDATE room_bans SET banned_by_identity_id = $2 WHERE banned_by_identity_id = $1`},
+		{"room archives", `UPDATE room_archives SET requested_by_identity_id = $2 WHERE requested_by_identity_id = $1`},
+	}
+	for _, update := range updates {
+		if _, err := tx.Exec(ctx, update.sql, sourceID, identity.ID); err != nil {
+			return SessionTokens{}, fmt.Errorf("merge %s: %w", update.name, err)
+		}
+	}
+	// Idempotency records are short-lived implementation details; deleting them
+	// avoids rare composite-key conflicts when two devices generated the same key.
+	if _, err := tx.Exec(ctx, `DELETE FROM room_creation_requests WHERE identity_id = $1`, sourceID); err != nil {
+		return SessionTokens{}, fmt.Errorf("remove anonymous creation requests: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at = $2 WHERE identity_id = $1 AND revoked_at IS NULL`, sourceID, now); err != nil {
+		return SessionTokens{}, fmt.Errorf("revoke anonymous sessions: %w", err)
+	}
+
+	var sessionID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO sessions (identity_id, token_hash, client_type, expires_at, created_at, last_used_at)
+		VALUES ($1, $2, 'web', $3, $4, $4)
+		RETURNING id
+	`, identity.ID, refreshHash[:], refreshExpiry, now).Scan(&sessionID); err != nil {
+		return SessionTokens{}, fmt.Errorf("create linked Telegram session: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM identities WHERE id = $1`, sourceID); err != nil {
+		return SessionTokens{}, fmt.Errorf("remove anonymous identity: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return SessionTokens{}, fmt.Errorf("commit identity link transaction: %w", err)
 	}
 	return s.issue(identity, sessionID, refreshToken, refreshExpiry)
 }

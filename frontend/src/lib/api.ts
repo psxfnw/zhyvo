@@ -120,6 +120,15 @@ export async function ensureIdentity(displayName: string) {
   return (await createAnonymous(displayName)).identity
 }
 
+export const auth = {
+  telegramConfig: () => api<{ enabled: boolean; client_id: string }>('/auth/telegram/config', { auth: false }),
+  linkTelegram: async (input: { code: string; code_verifier: string; nonce: string }) => {
+    const next = await api<Session>('/auth/telegram/oidc', { method: 'POST', body: JSON.stringify(input) })
+    saveSession(next)
+    return next
+  },
+}
+
 export const rooms = {
 	list: () => api<{ rooms: Room[] }>('/rooms'),
   create: (input: { name: string; lifetime_days: number; access: { mode: AccessMode; secret?: string } }) =>

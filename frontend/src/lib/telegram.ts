@@ -14,6 +14,8 @@ export interface TelegramWebApp {
   setBackgroundColor: (color: string) => void
   setBottomBarColor?: (color: string) => void
   openTelegramLink?: (url: string) => void
+  openLink?: (url: string, options?: { try_instant_view?: boolean }) => void
+  downloadFile?: (params: { url: string; file_name: string }, callback?: (accepted: boolean) => void) => void
   onEvent: (event: string, handler: TelegramEventHandler) => void
   offEvent: (event: string, handler: TelegramEventHandler) => void
   BackButton: { show: () => void; hide: () => void }
@@ -113,6 +115,10 @@ const TELEGRAM_BOT_USERNAME = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME || 'zh
 
 export function telegramRoomLink(slug: string) {
   return `https://t.me/${TELEGRAM_BOT_USERNAME}?startapp=room_${slug.toUpperCase()}`
+}
+
+export function roomInviteLink(slug: string) {
+  return `${window.location.origin}/invite/${slug.toUpperCase()}`
 }
 
 export function telegramShareLink(roomName: string, roomURL: string) {

@@ -15,10 +15,17 @@ type authHandler struct {
 	service             *auth.Service
 	telegramBotToken    string
 	telegramInitDataTTL time.Duration
+	telegramOIDC        *auth.TelegramOIDC
 }
 
 type telegramRequest struct {
 	InitData string `json:"init_data"`
+}
+
+type telegramOIDCRequest struct {
+	Code         string `json:"code"`
+	CodeVerifier string `json:"code_verifier"`
+	Nonce        string `json:"nonce"`
 }
 
 type anonymousRequest struct {
@@ -83,6 +90,52 @@ func (handler authHandler) createTelegram(response http.ResponseWriter, request 
 		return
 	}
 	writeJSON(response, http.StatusCreated, newTokenResponse(result))
+}
+
+func (handler authHandler) telegramConfig(response http.ResponseWriter, _ *http.Request) {
+	enabled := handler.telegramOIDC != nil && handler.telegramOIDC.Enabled()
+	clientID := ""
+	if enabled {
+		clientID = handler.telegramOIDC.ClientID()
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"enabled": enabled, "client_id": clientID})
+}
+
+func (handler authHandler) linkTelegramOIDC(response http.ResponseWriter, request *http.Request) {
+	if handler.telegramOIDC == nil || !handler.telegramOIDC.Enabled() {
+		writeAPIError(response, request, http.StatusServiceUnavailable, "TELEGRAM_LOGIN_NOT_CONFIGURED", "Telegram browser login is not configured")
+		return
+	}
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	var input telegramOIDCRequest
+	if err := decodeJSON(response, request, &input); err != nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_JSON", "Request body is invalid")
+		return
+	}
+	proto := request.Header.Get("X-Forwarded-Proto")
+	if proto != "https" {
+		proto = "http"
+	}
+	redirectURI := proto + "://" + request.Host + "/auth/telegram/callback"
+	user, err := handler.telegramOIDC.Exchange(request.Context(), input.Code, input.CodeVerifier, redirectURI, input.Nonce)
+	if err != nil {
+		writeAPIError(response, request, http.StatusUnauthorized, "INVALID_TELEGRAM_LOGIN", "Telegram login could not be verified")
+		return
+	}
+	result, err := handler.service.LinkTelegram(request.Context(), principal.IdentityID, user)
+	if errors.Is(err, auth.ErrIdentityLinkDenied) {
+		writeAPIError(response, request, http.StatusConflict, "IDENTITY_LINK_NOT_ALLOWED", "Only a temporary browser profile can be linked")
+		return
+	}
+	if err != nil {
+		writeAPIError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")
+		return
+	}
+	writeJSON(response, http.StatusOK, newTokenResponse(result))
 }
 
 func (handler authHandler) refresh(response http.ResponseWriter, request *http.Request) {

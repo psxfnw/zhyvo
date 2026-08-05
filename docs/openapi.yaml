@@ -63,6 +63,44 @@ paths:
         '429': {$ref: '#/components/responses/RateLimited'}
         '503': {description: Telegram authentication is not configured}
 
+  /auth/telegram/config:
+    get:
+      operationId: getTelegramLoginConfig
+      tags: [Auth]
+      summary: Get public browser-login availability and Client ID
+      security: []
+      responses:
+        '200':
+          description: Telegram OIDC configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled, client_id]
+                properties:
+                  enabled: {type: boolean}
+                  client_id: {type: string}
+
+  /auth/telegram/oidc:
+    post:
+      operationId: linkBrowserIdentityToTelegram
+      tags: [Auth]
+      summary: Exchange an OIDC authorization code and upgrade the current anonymous identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TelegramOIDCRequest'}
+      responses:
+        '200':
+          description: Identity linked; rooms, memberships, uploads and ownership preserved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenResponse'}
+        '401': {description: Authorization code, PKCE verifier, nonce or ID token is invalid}
+        '409': {description: Current identity cannot be upgraded}
+        '503': {description: Telegram browser login is not configured}
+
   /auth/refresh:
     post:
       operationId: refreshSession
@@ -685,6 +723,15 @@ components:
           type: string
           minLength: 1
           description: Raw, unmodified value from Telegram.WebApp.initData
+
+    TelegramOIDCRequest:
+      type: object
+      additionalProperties: false
+      required: [code, code_verifier, nonce]
+      properties:
+        code: {type: string, minLength: 1}
+        code_verifier: {type: string, minLength: 43, maxLength: 128}
+        nonce: {type: string, minLength: 1}
 
     TokenResponse:
       type: object

@@ -28,12 +28,10 @@ func TestTelegramOIDCExchangeAndNonceValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	claims := telegramOIDCClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer: telegramIssuer, Subject: "987654321", Audience: jwt.ClaimStrings{"123456"},
-			IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
-		},
-		ID: 987654321, Name: "Zhyvo Tester", PreferredUsername: "zhyvo_test", Nonce: "expected-nonce",
+	claims := jwt.MapClaims{
+		"iss": telegramIssuer, "sub": "987654321", "aud": "123456",
+		"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+		"id": "987654321", "name": "Zhyvo Tester", "preferred_username": "zhyvo_test", "nonce": "expected-nonce",
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = "test-key"

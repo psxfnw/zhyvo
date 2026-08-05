@@ -67,6 +67,7 @@ func run(logger *slog.Logger) error {
 			TelegramBotUsername: cfg.Telegram.BotUsername,
 			TelegramInitDataTTL: cfg.Telegram.InitDataTTL,
 			TelegramOIDC:        telegramOIDC,
+			Logger:              logger,
 		}),
 		ReadHeaderTimeout: cfg.ShutdownTimeout,
 	}

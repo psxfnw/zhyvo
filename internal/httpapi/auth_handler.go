@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"photodrop/internal/auth"
 )
@@ -16,6 +18,7 @@ type authHandler struct {
 	telegramBotToken    string
 	telegramInitDataTTL time.Duration
 	telegramOIDC        *auth.TelegramOIDC
+	logger              *slog.Logger
 }
 
 type telegramRequest struct {
@@ -123,7 +126,8 @@ func (handler authHandler) linkTelegramOIDC(response http.ResponseWriter, reques
 	redirectURI := proto + "://" + request.Host + "/auth/telegram/callback"
 	user, err := handler.telegramOIDC.Exchange(request.Context(), input.Code, input.CodeVerifier, redirectURI, input.Nonce)
 	if err != nil {
-		writeAPIError(response, request, http.StatusUnauthorized, "INVALID_TELEGRAM_LOGIN", "Telegram login could not be verified")
+		handler.logger.Warn("Telegram OIDC login failed", "request_id", middleware.GetReqID(request.Context()), "error", err)
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_TELEGRAM_LOGIN", "Telegram login could not be verified")
 		return
 	}
 	result, err := handler.service.LinkTelegram(request.Context(), principal.IdentityID, user)

@@ -366,7 +366,10 @@ function HomePage() {
 function TelegramLoginCallback() {
   const navigate = useNavigate()
   const [error, setError] = useState('')
+  const started = useRef(false)
   useEffect(() => {
+    if (started.current) return
+    started.current = true
     let active = true
     completeTelegramLogin(window.location.search).then(({ returnTo }) => {
       if (active) navigate(returnTo, { replace: true })

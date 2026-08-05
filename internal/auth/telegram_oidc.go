@@ -37,17 +37,30 @@ type TelegramOIDC struct {
 
 type telegramTokenResponse struct {
 	IDToken string `json:"id_token"`
+	Error   string `json:"error"`
 }
 
 type telegramOIDCClaims struct {
 	jwt.RegisteredClaims
-	ID                int64  `json:"id"`
-	Name              string `json:"name"`
-	GivenName         string `json:"given_name"`
-	FamilyName        string `json:"family_name"`
-	PreferredUsername string `json:"preferred_username"`
-	Picture           string `json:"picture"`
-	Nonce             string `json:"nonce"`
+	ID                telegramUserID `json:"id"`
+	Name              string         `json:"name"`
+	GivenName         string         `json:"given_name"`
+	FamilyName        string         `json:"family_name"`
+	PreferredUsername string         `json:"preferred_username"`
+	Picture           string         `json:"picture"`
+	Nonce             string         `json:"nonce"`
+}
+
+type telegramUserID int64
+
+func (id *telegramUserID) UnmarshalJSON(data []byte) error {
+	value := strings.Trim(string(data), `"`)
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return ErrInvalidTelegramIDToken
+	}
+	*id = telegramUserID(parsed)
+	return nil
 }
 
 func NewTelegramOIDC(clientID, clientSecret string) *TelegramOIDC {
@@ -91,13 +104,23 @@ func (oidc *TelegramOIDC) Exchange(ctx context.Context, code, codeVerifier, redi
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return TelegramUser{}, ErrInvalidTelegramIDToken
+		return TelegramUser{}, fmt.Errorf("Telegram token endpoint returned status %d: %w", response.StatusCode, ErrInvalidTelegramIDToken)
 	}
 	var tokens telegramTokenResponse
-	if err := json.NewDecoder(response.Body).Decode(&tokens); err != nil || tokens.IDToken == "" {
-		return TelegramUser{}, ErrInvalidTelegramIDToken
+	if err := json.NewDecoder(response.Body).Decode(&tokens); err != nil {
+		return TelegramUser{}, fmt.Errorf("decode Telegram token response: %w", ErrInvalidTelegramIDToken)
 	}
-	return oidc.VerifyIDToken(ctx, tokens.IDToken, expectedNonce)
+	if tokens.Error != "" {
+		return TelegramUser{}, fmt.Errorf("Telegram token exchange rejected with %q: %w", tokens.Error, ErrInvalidTelegramIDToken)
+	}
+	if tokens.IDToken == "" {
+		return TelegramUser{}, fmt.Errorf("Telegram token response has no ID token: %w", ErrInvalidTelegramIDToken)
+	}
+	user, err := oidc.VerifyIDToken(ctx, tokens.IDToken, expectedNonce)
+	if err != nil {
+		return TelegramUser{}, fmt.Errorf("verify Telegram ID token: %w", err)
+	}
+	return user, nil
 }
 
 func (oidc *TelegramOIDC) VerifyIDToken(ctx context.Context, raw, expectedNonce string) (TelegramUser, error) {
@@ -112,10 +135,13 @@ func (oidc *TelegramOIDC) VerifyIDToken(ctx context.Context, raw, expectedNonce 
 		}
 		return oidc.key(ctx, kid)
 	}, jwt.WithIssuer(telegramIssuer), jwt.WithAudience(oidc.clientID), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(30*time.Second), jwt.WithValidMethods([]string{"RS256"}))
-	if err != nil || !token.Valid || claims.Nonce != expectedNonce {
-		return TelegramUser{}, ErrInvalidTelegramIDToken
+	if err != nil || !token.Valid {
+		return TelegramUser{}, fmt.Errorf("signature or claims validation failed (%v): %w", err, ErrInvalidTelegramIDToken)
 	}
-	id := claims.ID
+	if claims.Nonce != expectedNonce {
+		return TelegramUser{}, fmt.Errorf("nonce validation failed: %w", ErrInvalidTelegramIDToken)
+	}
+	id := int64(claims.ID)
 	if id <= 0 {
 		id, err = strconv.ParseInt(claims.Subject, 10, 64)
 		if err != nil || id <= 0 {

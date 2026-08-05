@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -27,6 +28,7 @@ type Dependencies struct {
 	TelegramBotUsername string
 	TelegramInitDataTTL time.Duration
 	TelegramOIDC        *auth.TelegramOIDC
+	Logger              *slog.Logger
 }
 
 func NewRouter(dependencies Dependencies) http.Handler {
@@ -55,7 +57,11 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		writeJSON(response, http.StatusOK, map[string]string{"status": "ready"})
 	})
 
-	authAPI := authHandler{service: dependencies.AuthService, telegramBotToken: dependencies.TelegramBotToken, telegramInitDataTTL: dependencies.TelegramInitDataTTL, telegramOIDC: dependencies.TelegramOIDC}
+	logger := dependencies.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	authAPI := authHandler{service: dependencies.AuthService, telegramBotToken: dependencies.TelegramBotToken, telegramInitDataTTL: dependencies.TelegramInitDataTTL, telegramOIDC: dependencies.TelegramOIDC, logger: logger}
 	router.Route("/api/v1/auth", func(router chi.Router) {
 		router.Get("/telegram/config", authAPI.telegramConfig)
 		router.With(anonymousLimiter.middleware(clientIPKey)).Post("/anonymous", authAPI.createAnonymous)

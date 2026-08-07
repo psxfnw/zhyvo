@@ -10,7 +10,7 @@ Future native Capacitor builds should replace Web Share with direct Photo Librar
 
 ## Browser identity linking through the Telegram bot
 
-Status: planned as the primary browser sign-in flow. Telegram OIDC remains an optional fallback.
+Status: implemented in the preview as the primary browser sign-in flow. Telegram OIDC remains an optional fallback.
 
 The browser creates a short-lived, single-use linking challenge and displays both a QR code and an `Open Telegram` deep link. The user confirms the request inside `@zhyvoappbot` or its Mini App. The browser polls a status endpoint and exchanges the approved challenge for a Zhyvo session, preserving rooms and uploaded media from the anonymous browser identity.
 

@@ -31,6 +31,10 @@ type telegramOIDCRequest struct {
 	Nonce        string `json:"nonce"`
 }
 
+type browserLinkRequest struct {
+	Token string `json:"token"`
+}
+
 type anonymousRequest struct {
 	DisplayName string `json:"display_name"`
 	ClientType  string `json:"client_type"`
@@ -102,6 +106,72 @@ func (handler authHandler) telegramConfig(response http.ResponseWriter, _ *http.
 		clientID = handler.telegramOIDC.ClientID()
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"enabled": enabled, "client_id": clientID})
+}
+
+func (handler authHandler) createBrowserLink(response http.ResponseWriter, request *http.Request) {
+	principal, _ := principalFromContext(request.Context())
+	result, err := handler.service.CreateBrowserLinkChallenge(request.Context(), principal.IdentityID)
+	if errors.Is(err, auth.ErrIdentityLinkDenied) {
+		writeAPIError(response, request, http.StatusConflict, "IDENTITY_LINK_NOT_ALLOWED", "Only a temporary browser profile can be linked")
+		return
+	}
+	if err != nil {
+		writeAPIError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")
+		return
+	}
+	writeJSON(response, http.StatusCreated, result)
+}
+
+func (handler authHandler) browserLinkStatus(response http.ResponseWriter, request *http.Request) {
+	principal, _ := principalFromContext(request.Context())
+	var input browserLinkRequest
+	if err := decodeJSON(response, request, &input); err != nil {
+		return
+	}
+	result, err := handler.service.BrowserLinkStatus(request.Context(), principal.IdentityID, input.Token)
+	if errors.Is(err, auth.ErrLinkChallengeUnavailable) {
+		writeAPIError(response, request, http.StatusNotFound, "LINK_CHALLENGE_NOT_FOUND", "Link request is unavailable")
+		return
+	}
+	if err != nil {
+		writeAPIError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler authHandler) approveBrowserLink(response http.ResponseWriter, request *http.Request) {
+	principal, _ := principalFromContext(request.Context())
+	var input browserLinkRequest
+	if err := decodeJSON(response, request, &input); err != nil {
+		return
+	}
+	if err := handler.service.ApproveBrowserLink(request.Context(), principal.IdentityID, input.Token); errors.Is(err, auth.ErrLinkChallengeUnavailable) {
+		writeAPIError(response, request, http.StatusConflict, "LINK_CHALLENGE_UNAVAILABLE", "Link request expired or was already used")
+		return
+	} else if err != nil {
+		writeAPIError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]string{"status": "approved"})
+}
+
+func (handler authHandler) exchangeBrowserLink(response http.ResponseWriter, request *http.Request) {
+	principal, _ := principalFromContext(request.Context())
+	var input browserLinkRequest
+	if err := decodeJSON(response, request, &input); err != nil {
+		return
+	}
+	result, err := handler.service.ExchangeBrowserLink(request.Context(), principal.IdentityID, input.Token)
+	if errors.Is(err, auth.ErrLinkChallengeUnavailable) {
+		writeAPIError(response, request, http.StatusConflict, "LINK_CHALLENGE_UNAVAILABLE", "Link request is not approved")
+		return
+	}
+	if err != nil {
+		writeAPIError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")
+		return
+	}
+	writeJSON(response, http.StatusOK, newTokenResponse(result))
 }
 
 func (handler authHandler) linkTelegramOIDC(response http.ResponseWriter, request *http.Request) {

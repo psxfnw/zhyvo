@@ -31,10 +31,10 @@ import {
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { ApiError, archives, ensureIdentity, getSession, media, rooms } from './lib/api'
+import { ApiError, archives, auth, ensureIdentity, getSession, media, rooms } from './lib/api'
 import { bytes, errorMessage, normalizeSlug, remaining } from './lib/format'
 import { canShareFiles, fetchShareFile, isMobileDevice, saveRemoteFile, sharePreparedFiles } from './lib/download'
-import { getTelegramBootstrapError, getTelegramWebApp, openTelegramInvite, roomInviteLink, telegramRoomLink } from './lib/telegram'
+import { getTelegramBootstrapError, getTelegramWebApp, openTelegramInvite, roomInviteLink, telegramBrowserLink, telegramRoomLink } from './lib/telegram'
 import { uploadFile } from './lib/upload'
 import { loadUploadQueue, saveUploadQueue } from './lib/uploadQueue'
 import { completeTelegramLogin, startTelegramLogin } from './lib/telegramLogin'
@@ -119,21 +119,13 @@ function IdentityField({ value, onChange }: { value: string; onChange: (value: s
 }
 
 function BrowserSessionNotice({ session }: { session: Session }) {
+	const navigate = useNavigate()
   const [dismissed, setDismissed] = useState(() => localStorage.getItem(`photodrop.login-notice.${session.identity.id}`) === 'hidden')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   if (dismissed || session.identity.kind !== 'anonymous' || getTelegramWebApp()) return null
 
-  async function login() {
-    setBusy(true)
-    setError('')
-    try {
-      await startTelegramLogin(window.location.pathname + window.location.search)
-    } catch (cause) {
-      setError(errorMessage(cause))
-      setBusy(false)
-    }
-  }
+  function login() { setBusy(true); setError(''); navigate(`/auth/telegram/link?returnTo=${encodeURIComponent(window.location.pathname + window.location.search)}`) }
 
   function dismiss() {
     localStorage.setItem(`photodrop.login-notice.${session.identity.id}`, 'hidden')
@@ -148,6 +140,58 @@ function BrowserSessionNotice({ session }: { session: Session }) {
       <button className="notice-close" onClick={dismiss} aria-label="Нагадати пізніше"><X size={17} /></button>
     </aside>
   )
+}
+
+function BrowserLinkPage() {
+  const navigate = useNavigate()
+  const [search] = useSearchParams()
+  const session = useSession()
+  const [challenge, setChallenge] = useState<{ token: string; expires_at: string } | null>(null)
+  const [error, setError] = useState('')
+  const started = useRef(false)
+  const returnTo = search.get('returnTo')?.startsWith('/') ? search.get('returnTo')! : '/'
+
+  useEffect(() => {
+    if (!session || session.identity.kind !== 'anonymous' || started.current) return
+    started.current = true
+    auth.createBrowserLink().then(setChallenge).catch((cause) => setError(errorMessage(cause)))
+  }, [session])
+
+  useEffect(() => {
+    if (!challenge) return
+    let active = true
+    const poll = async () => {
+      try {
+        const result = await auth.browserLinkStatus(challenge.token)
+        if (!active) return
+        if (result.status === 'approved') { await auth.exchangeBrowserLink(challenge.token); navigate(returnTo, { replace: true }); return }
+        if (result.status === 'expired' || result.status === 'denied') { setError('Запит більше не активний. Поверніться назад і створіть новий.'); return }
+        setTimeout(poll, 1800)
+      } catch (cause) { if (active) setError(errorMessage(cause)) }
+    }
+    const timer = setTimeout(poll, 900)
+    return () => { active = false; clearTimeout(timer) }
+  }, [challenge, navigate, returnTo])
+
+  if (session?.identity.kind === 'telegram') return <Navigate to={returnTo} replace />
+  const telegramURL = challenge ? telegramBrowserLink(challenge.token) : ''
+  return <main className="link-flow"><section className="link-flow__card"><div className="link-flow__top"><Brand /><div className="link-flow__step">01 / 03</div></div><h1>Підтвердьте вхід у Telegram</h1><p>Відскануйте QR-код або відкрийте Zhyvo в Telegram. Там ви окремо підтвердите підключення цього браузера.</p>{challenge && <><div className="link-flow__qr"><QRCodeSVG value={telegramURL} size={176} level="M" title="Відкрити підтвердження Zhyvo у Telegram" /></div><a className="primary-button" href={telegramURL} target="_blank" rel="noopener noreferrer">Відкрити Telegram</a><div className="link-flow__waiting"><span /> Очікуємо підтвердження</div></>}{!challenge && !error && <div className="loading-line" />}{error && <p className="form-error" role="alert">{error}</p>}<div className="link-flow__alternatives"><button className="text-button" onClick={() => void startTelegramLogin(returnTo)}>Стандартний вхід Telegram</button><Link to={returnTo}>Скасувати</Link></div></section></main>
+}
+
+function TelegramLinkConfirmPage() {
+	const navigate = useNavigate()
+  const [search] = useSearchParams()
+  const session = useSession()
+  const token = search.get('token') ?? ''
+  const [status, setStatus] = useState<'ready' | 'busy' | 'done'>('ready')
+  const [error, setError] = useState('')
+  async function approve() {
+    setStatus('busy'); setError('')
+    try { await auth.approveBrowserLink(token); setStatus('done'); getTelegramWebApp()?.HapticFeedback?.impactOccurred('medium') }
+    catch (cause) { setError(errorMessage(cause)); setStatus('ready') }
+  }
+  if (!getTelegramWebApp() || session?.identity.kind !== 'telegram') return <main className="status-page"><Brand /><h1>Відкрийте цей запит у Telegram</h1><p>Підтвердження доступне лише всередині Mini App Zhyvo.</p></main>
+  return <main className="link-flow"><section className="link-flow__card"><div className="link-flow__top"><Brand /><div className="link-flow__step">{status === 'done' ? '03 / 03' : '02 / 03'}</div></div>{status === 'done' ? <><ShieldCheck className="link-flow__success" size={52} /><h1>Браузер підключено</h1><p>Вкладка браузера автоматично повернеться на головну Zhyvo.</p><button className="primary-button" onClick={() => navigate('/', { replace: true })}>На головну Zhyvo</button></> : <><h1>Підключити браузер?</h1><p>Браузер отримає доступ до ваших кімнат Zhyvo. Доступу до повідомлень, контактів і номера Telegram не буде.</p><button className="primary-button" onClick={() => void approve()} disabled={status === 'busy'}><ShieldCheck size={18} />{status === 'busy' ? 'Підтверджуємо…' : 'Підтвердити'}</button>{error && <p className="form-error" role="alert">{error}</p>}</>}</section></main>
 }
 
 function AccessFields({ mode, onMode, secret, onSecret }: {
@@ -1288,6 +1332,8 @@ export default function App() {
         <Route path="/" element={<HomePage />} />
         <Route path="/r/:slug" element={<RoomPage />} />
         <Route path="/auth/telegram/callback" element={<TelegramLoginCallback />} />
+		<Route path="/auth/telegram/link" element={<BrowserLinkPage />} />
+		<Route path="/auth/telegram/link-confirm" element={<TelegramLinkConfirmPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </>

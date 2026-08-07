@@ -127,6 +127,14 @@ export const auth = {
     saveSession(next)
     return next
   },
+  createBrowserLink: () => api<{ token: string; status: string; expires_at: string }>('/auth/telegram/link-challenges', { method: 'POST' }),
+  browserLinkStatus: (token: string) => api<{ status: string; expires_at: string }>('/auth/telegram/link-challenges/status', { method: 'POST', body: JSON.stringify({ token }) }),
+  approveBrowserLink: (token: string) => api<{ status: string }>('/auth/telegram/link-challenges/approve', { method: 'POST', body: JSON.stringify({ token }) }),
+  exchangeBrowserLink: async (token: string) => {
+    const next = await api<Session>('/auth/telegram/link-challenges/exchange', { method: 'POST', body: JSON.stringify({ token }) })
+    saveSession(next)
+    return next
+  },
 }
 
 export const rooms = {

@@ -52,6 +52,11 @@ export function getTelegramStartParam(candidate = window.Telegram?.WebApp) {
 }
 
 function applyTelegramStartRoute(startParam: string) {
+	const linkToken = startParam.match(/^link_([A-Za-z0-9_-]{43})$/)?.[1]
+	if (location.pathname === '/' && linkToken) {
+		history.replaceState(history.state, '', `/auth/telegram/link-confirm?token=${encodeURIComponent(linkToken)}`)
+		return
+	}
   const slug = startParam.replace(/^room[_-]/i, '').toUpperCase()
   if (location.pathname === '/' && /^[A-Z0-9]{6,12}$/.test(slug)) {
     history.replaceState(history.state, '', `/r/${slug}`)
@@ -115,6 +120,10 @@ const TELEGRAM_BOT_USERNAME = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME || 'zh
 
 export function telegramRoomLink(slug: string) {
   return `https://t.me/${TELEGRAM_BOT_USERNAME}?startapp=room_${slug.toUpperCase()}`
+}
+
+export function telegramBrowserLink(token: string) {
+  return `https://t.me/${TELEGRAM_BOT_USERNAME}?startapp=link_${token}`
 }
 
 export function roomInviteLink(slug: string) {

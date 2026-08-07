@@ -97,9 +97,72 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/TokenResponse'}
-        '401': {description: Authorization code, PKCE verifier, nonce or ID token is invalid}
+        '400': {description: Authorization code, PKCE verifier, nonce or ID token is invalid}
         '409': {description: Current identity cannot be upgraded}
         '503': {description: Telegram browser login is not configured}
+
+  /auth/telegram/link-challenges:
+    post:
+      operationId: createTelegramBrowserLinkChallenge
+      tags: [Auth]
+      summary: Create a five-minute single-use browser linking challenge
+      responses:
+        '201':
+          description: Challenge created for the current anonymous identity
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BrowserLinkChallenge'}
+        '409': {description: Current identity cannot be linked}
+
+  /auth/telegram/link-challenges/status:
+    post:
+      operationId: getTelegramBrowserLinkStatus
+      tags: [Auth]
+      summary: Poll a challenge bound to the current anonymous identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BrowserLinkRequest'}
+      responses:
+        '200':
+          description: Current challenge status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BrowserLinkChallenge'}
+        '404': {description: Challenge not found}
+
+  /auth/telegram/link-challenges/approve:
+    post:
+      operationId: approveTelegramBrowserLink
+      tags: [Auth]
+      summary: Approve a browser challenge from an authenticated Telegram Mini App
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BrowserLinkRequest'}
+      responses:
+        '200': {description: Challenge approved}
+        '409': {description: Challenge expired, denied or already used}
+
+  /auth/telegram/link-challenges/exchange:
+    post:
+      operationId: exchangeTelegramBrowserLink
+      tags: [Auth]
+      summary: Consume an approved challenge and upgrade the anonymous browser identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BrowserLinkRequest'}
+      responses:
+        '200':
+          description: Browser identity linked to Telegram
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenResponse'}
+        '409': {description: Challenge is not approved or is no longer available}
 
   /auth/refresh:
     post:
@@ -732,6 +795,25 @@ components:
         code: {type: string, minLength: 1}
         code_verifier: {type: string, minLength: 43, maxLength: 128}
         nonce: {type: string, minLength: 1}
+
+    BrowserLinkRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: {type: string, minLength: 43, maxLength: 43}
+
+    BrowserLinkChallenge:
+      type: object
+      required: [status, expires_at]
+      properties:
+        token:
+          type: string
+          minLength: 43
+          maxLength: 43
+          description: Returned only when the challenge is created
+        status: {type: string, enum: [pending, approved, consumed, denied, expired]}
+        expires_at: {type: string, format: date-time}
 
     TokenResponse:
       type: object

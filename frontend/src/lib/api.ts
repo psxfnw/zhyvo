@@ -127,14 +127,35 @@ export const auth = {
     saveSession(next)
     return next
   },
-  createBrowserLink: () => api<{ token: string; status: string; expires_at: string }>('/auth/telegram/link-challenges', { method: 'POST' }),
+  createBrowserLink: createOrReuseBrowserLink,
   browserLinkStatus: (token: string) => api<{ status: string; expires_at: string }>('/auth/telegram/link-challenges/status', { method: 'POST', body: JSON.stringify({ token }) }),
   approveBrowserLink: (token: string) => api<{ status: string }>('/auth/telegram/link-challenges/approve', { method: 'POST', body: JSON.stringify({ token }) }),
   exchangeBrowserLink: async (token: string) => {
     const next = await api<Session>('/auth/telegram/link-challenges/exchange', { method: 'POST', body: JSON.stringify({ token }) })
+    sessionStorage.removeItem(BROWSER_LINK_KEY)
     saveSession(next)
     return next
   },
+}
+
+const BROWSER_LINK_KEY = 'photodrop.telegram.browser-link.v1'
+let browserLinkPromise: Promise<{ token: string; status: string; expires_at: string }> | null = null
+
+function createOrReuseBrowserLink() {
+  try {
+    const raw = sessionStorage.getItem(BROWSER_LINK_KEY)
+    if (raw) {
+      const stored = JSON.parse(raw) as { token: string; status: string; expires_at: string }
+      if (stored.token && Date.parse(stored.expires_at) > Date.now() + 10_000) return Promise.resolve(stored)
+      sessionStorage.removeItem(BROWSER_LINK_KEY)
+    }
+  } catch { sessionStorage.removeItem(BROWSER_LINK_KEY) }
+  if (!browserLinkPromise) {
+    browserLinkPromise = api<{ token: string; status: string; expires_at: string }>('/auth/telegram/link-challenges', { method: 'POST' })
+      .then((challenge) => { sessionStorage.setItem(BROWSER_LINK_KEY, JSON.stringify(challenge)); return challenge })
+      .finally(() => { browserLinkPromise = null })
+  }
+  return browserLinkPromise
 }
 
 export const rooms = {

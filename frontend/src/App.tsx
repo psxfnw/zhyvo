@@ -183,11 +183,12 @@ function TelegramLinkConfirmPage() {
   const [search] = useSearchParams()
   const session = useSession()
   const token = search.get('token') ?? ''
-  const [status, setStatus] = useState<'ready' | 'busy' | 'done'>('ready')
+  const approvedTokenKey = 'photodrop.telegram.approved-browser-link.v1'
+  const [status, setStatus] = useState<'ready' | 'busy' | 'done'>(() => sessionStorage.getItem(approvedTokenKey) === token ? 'done' : 'ready')
   const [error, setError] = useState('')
   async function approve() {
     setStatus('busy'); setError('')
-    try { await auth.approveBrowserLink(token); setStatus('done'); getTelegramWebApp()?.HapticFeedback?.impactOccurred('medium') }
+    try { await auth.approveBrowserLink(token); sessionStorage.setItem(approvedTokenKey, token); setStatus('done'); getTelegramWebApp()?.HapticFeedback?.impactOccurred('medium') }
     catch (cause) { setError(errorMessage(cause)); setStatus('ready') }
   }
   if (!getTelegramWebApp() || session?.identity.kind !== 'telegram') return <main className="status-page"><Brand /><h1>Відкрийте цей запит у Telegram</h1><p>Підтвердження доступне лише всередині Mini App Zhyvo.</p></main>

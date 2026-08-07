@@ -83,10 +83,22 @@ func (s *Service) ApproveBrowserLink(ctx context.Context, telegramIdentityID uui
 	if err != nil {
 		return err
 	}
-	if result.RowsAffected() != 1 {
-		return ErrLinkChallengeUnavailable
+	if result.RowsAffected() == 1 {
+		return nil
 	}
-	return nil
+	var alreadyHandled bool
+	err = s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM browser_link_challenges challenge
+			JOIN identities identity ON identity.telegram_user_id = challenge.approved_telegram_user_id
+			WHERE challenge.token_hash = $1 AND identity.id = $2
+			  AND challenge.status IN ('approved', 'consumed')
+		)
+	`, hash[:], telegramIdentityID).Scan(&alreadyHandled)
+	if err == nil && alreadyHandled {
+		return nil
+	}
+	return ErrLinkChallengeUnavailable
 }
 
 func (s *Service) ExchangeBrowserLink(ctx context.Context, sourceID uuid.UUID, token string) (SessionTokens, error) {

@@ -54,8 +54,8 @@ type Download struct {
 }
 
 type galleryCursor struct {
-	CreatedAt time.Time
-	ID        uuid.UUID
+	SortAt time.Time
+	ID     uuid.UUID
 }
 
 func (s *Service) Gallery(ctx context.Context, identityID uuid.UUID, slug string, limit int, rawCursor string) (GalleryPage, error) {
@@ -79,7 +79,7 @@ func (s *Service) Gallery(ctx context.Context, identityID uuid.UUID, slug string
 	var cursorTime *time.Time
 	cursorID := uuid.Nil
 	if cursor != nil {
-		cursorTime = &cursor.CreatedAt
+		cursorTime = &cursor.SortAt
 		cursorID = cursor.ID
 	}
 	rows, err := s.db.Query(ctx, `
@@ -90,8 +90,8 @@ func (s *Service) Gallery(ctx context.Context, identityID uuid.UUID, slug string
 		JOIN identities i ON i.id = m.uploader_identity_id
 		WHERE m.room_id = $1
 		  AND m.status = 'ready'
-		  AND ($2::timestamptz IS NULL OR (m.created_at, m.id) < ($2, $3))
-		ORDER BY m.created_at DESC, m.id DESC
+		  AND ($2::timestamptz IS NULL OR (COALESCE(m.captured_at, m.created_at), m.id) < ($2, $3))
+		ORDER BY COALESCE(m.captured_at, m.created_at) DESC, m.id DESC
 		LIMIT $4
 	`, roomID, cursorTime, cursorID, limit+1)
 	if err != nil {
@@ -132,7 +132,12 @@ func (s *Service) Gallery(ctx context.Context, identityID uuid.UUID, slug string
 	}
 	var nextCursor *string
 	if hasMore && len(items) > 0 {
-		encoded := encodeGalleryCursor(galleryCursor{CreatedAt: items[len(items)-1].CreatedAt, ID: items[len(items)-1].ID})
+		last := items[len(items)-1]
+		sortAt := last.CreatedAt
+		if last.CapturedAt != nil {
+			sortAt = *last.CapturedAt
+		}
+		encoded := encodeGalleryCursor(galleryCursor{SortAt: sortAt, ID: last.ID})
 		nextCursor = &encoded
 	}
 	return GalleryPage{Items: items, NextCursor: nextCursor, HasMore: hasMore}, nil
@@ -274,7 +279,7 @@ func (s *Service) roomMembership(ctx context.Context, identityID uuid.UUID, slug
 }
 
 func encodeGalleryCursor(cursor galleryCursor) string {
-	raw := strconv.FormatInt(cursor.CreatedAt.UTC().UnixMicro(), 10) + "." + cursor.ID.String()
+	raw := strconv.FormatInt(cursor.SortAt.UTC().UnixMicro(), 10) + "." + cursor.ID.String()
 	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
@@ -295,5 +300,5 @@ func decodeGalleryCursor(encoded string) (galleryCursor, error) {
 	if err != nil {
 		return galleryCursor{}, err
 	}
-	return galleryCursor{CreatedAt: time.UnixMicro(microseconds).UTC(), ID: id}, nil
+	return galleryCursor{SortAt: time.UnixMicro(microseconds).UTC(), ID: id}, nil
 }

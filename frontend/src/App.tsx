@@ -39,11 +39,39 @@ import { canShareFiles, fetchShareFile, isMobileDevice, saveRemoteFile, sharePre
 import { getTelegramBootstrapError, getTelegramWebApp, openTelegramInvite, roomInviteLink, telegramBrowserLink, telegramRoomLink } from './lib/telegram'
 import { uploadFile } from './lib/upload'
 import { loadUploadQueue, saveUploadQueue } from './lib/uploadQueue'
+import { mediaCapturedAt } from './lib/metadata'
 import { completeTelegramLogin, startTelegramLogin } from './lib/telegramLogin'
 import type { AccessMode, BlockedRoomMember, GalleryItem, Room, RoomActivityEvent, RoomArchive, RoomMember, RoomPreview, Session, UploadProgress } from './types'
 
 function uuid() {
   return crypto.randomUUID()
+}
+
+type GalleryFilter = 'all' | 'image' | 'video' | 'mine'
+
+function mediaDate(item: GalleryItem) {
+  return new Date(item.captured_at ?? item.created_at)
+}
+
+function sortGallery(items: GalleryItem[]) {
+  return [...items].sort((left, right) => {
+    const dateDifference = mediaDate(right).getTime() - mediaDate(left).getTime()
+    return dateDifference || right.id.localeCompare(left.id)
+  })
+}
+
+function galleryDay(item: GalleryItem) {
+  const date = mediaDate(item)
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  const dateKey = date.toLocaleDateString('sv-SE')
+  if (dateKey === today.toLocaleDateString('sv-SE')) return { key: dateKey, label: 'Сьогодні' }
+  if (dateKey === yesterday.toLocaleDateString('sv-SE')) return { key: dateKey, label: 'Учора' }
+  return {
+    key: dateKey,
+    label: date.toLocaleDateString('uk-UA', { day: 'numeric', month: 'long', year: 'numeric' }),
+  }
 }
 
 function activityLabel(event: RoomActivityEvent) {
@@ -784,7 +812,7 @@ function MediaViewer({ item, items, onSelect, onClose, onError }: {
         {previous && <button className="viewer-nav viewer-nav--previous" onClick={() => onSelect(previous)} aria-label="Попередній файл"><ChevronLeft /></button>}
         {next && <button className="viewer-nav viewer-nav--next" onClick={() => onSelect(next)} aria-label="Наступний файл"><ChevronRight /></button>}
       </div>
-      <footer className="viewer-footer"><span>{index + 1} / {items.length}</span><span>{new Date(item.created_at).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })}</span></footer>
+      <footer className="viewer-footer"><span>{index + 1} / {items.length}</span><span>{mediaDate(item).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })}</span></footer>
     </div>
   )
 }
@@ -810,6 +838,7 @@ function RoomPage() {
   const [room, setRoom] = useState<Room | null>(null)
   const [preview, setPreview] = useState<RoomPreview | null>(null)
   const [gallery, setGallery] = useState<GalleryItem[]>([])
+  const [galleryFilter, setGalleryFilter] = useState<GalleryFilter>('all')
   const [cursor, setCursor] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
   const [uploads, setUploads] = useState<UploadProgress[]>([])
@@ -848,7 +877,7 @@ function RoomPage() {
 
   const loadGallery = useCallback(async (append = false, nextCursor?: string | null) => {
     const page = await media.gallery(slug, append ? nextCursor : null)
-    setGallery((current) => append ? [...current, ...page.items] : page.items)
+    setGallery((current) => sortGallery(append ? [...current, ...page.items] : page.items))
     loadedPastFirstPageRef.current = append
     setCursor(page.next_cursor)
     setHasMore(page.has_more)
@@ -861,8 +890,8 @@ function RoomPage() {
       const page = await media.gallery(slug)
       setGallery((current) => {
         const freshIDs = new Set(page.items.map((item) => item.id))
-        if (current.length <= 50) return page.items
-        return [...page.items, ...current.slice(50).filter((item) => !freshIDs.has(item.id))]
+        if (current.length <= 50) return sortGallery(page.items)
+        return sortGallery([...page.items, ...current.slice(50).filter((item) => !freshIDs.has(item.id))])
       })
       if (!loadedPastFirstPageRef.current) {
         setCursor(page.next_cursor)
@@ -958,6 +987,7 @@ function RoomPage() {
         signal: controller.signal,
         idempotencyKey: queueItem.idempotency_key,
         mimeType: queueItem.mime_type,
+        capturedAt: queueItem.captured_at,
         completedParts: queueItem.completed_parts,
         onProgress: (progress) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, progress, message: undefined } : item)),
         onStatus: (message) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, message } : item)),
@@ -994,7 +1024,9 @@ function RoomPage() {
     const rejected: UploadProgress[] = []
     const accepted = incoming.filter((file) => {
       const fingerprint = `${file.name}:${file.size}`
-      const message = file.size > 2 * 1024 * 1024 * 1024
+      const message = file.type.startsWith('image/') && file.size > 50 * 1024 * 1024
+        ? 'Фото перевищує ліміт 50 МБ'
+        : file.size > 2 * 1024 * 1024 * 1024
         ? 'Файл перевищує ліміт 2 ГБ'
         : !file.type.startsWith('image/') && !file.type.startsWith('video/')
           ? 'Підтримуються лише фото та відео'
@@ -1003,7 +1035,8 @@ function RoomPage() {
       rejected.push({ id: uuid(), filename: file.name, size_bytes: file.size, mime_type: file.type, last_modified: file.lastModified, idempotency_key: uuid(), created_at: new Date().toISOString(), progress: 0, state: 'error', message, canRetry: false })
       return false
     })
-    const queue: UploadProgress[] = accepted.map((file) => ({
+    const capturedDates = await Promise.all(accepted.map(mediaCapturedAt))
+    const queue: UploadProgress[] = accepted.map((file, index) => ({
       id: uuid(),
       filename: file.name,
       size_bytes: file.size,
@@ -1013,6 +1046,7 @@ function RoomPage() {
       created_at: new Date().toISOString(),
       progress: 0,
       state: 'queued',
+      captured_at: capturedDates[index],
     }))
     queue.forEach((item, index) => {
       uploadFilesRef.current.set(item.id, accepted[index])
@@ -1224,7 +1258,25 @@ function RoomPage() {
 
   const ttl = remaining(room.expires_at)
   const usedPercent = Math.min(100, (room.used_storage_bytes / room.max_storage_bytes) * 100)
-  const selectedMedia = gallery.find((item) => item.id === selectedMediaID) ?? null
+  const filteredGallery = gallery.filter((item) => {
+    if (galleryFilter === 'mine') return item.uploaded_by.id === session?.identity.id
+    if (galleryFilter === 'image' || galleryFilter === 'video') return item.media_type === galleryFilter
+    return true
+  })
+  const galleryGroups = filteredGallery.reduce<Array<{ key: string; label: string; items: GalleryItem[] }>>((groups, item) => {
+    const day = galleryDay(item)
+    const existing = groups.at(-1)
+    if (existing?.key === day.key) existing.items.push(item)
+    else groups.push({ ...day, items: [item] })
+    return groups
+  }, [])
+  const selectedMedia = filteredGallery.find((item) => item.id === selectedMediaID) ?? null
+  const filterCounts: Record<GalleryFilter, number> = {
+    all: gallery.length,
+    image: gallery.filter((item) => item.media_type === 'image').length,
+    video: gallery.filter((item) => item.media_type === 'video').length,
+    mine: gallery.filter((item) => item.uploaded_by.id === session?.identity.id).length,
+  }
   const shareURL = `${window.location.origin}/r/${slug}`
   const telegramInviteURL = telegramRoomLink(slug)
   const previewInviteURL = roomInviteLink(slug)
@@ -1272,24 +1324,46 @@ function RoomPage() {
 
       <div className="storage-line"><span style={{ width: `${usedPercent}%` }} /></div>
 
+      {gallery.length > 0 && (
+        <nav className="gallery-filters" aria-label="Фільтр галереї">
+          {([
+            ['all', 'Усі'],
+            ['image', 'Фото'],
+            ['video', 'Відео'],
+            ['mine', 'Мої'],
+          ] as Array<[GalleryFilter, string]>).map(([value, label]) => (
+            <button key={value} className={galleryFilter === value ? 'is-active' : ''} aria-pressed={galleryFilter === value} onClick={() => setGalleryFilter(value)}>
+              <span>{label}</span><small>{filterCounts[value]}</small>
+            </button>
+          ))}
+        </nav>
+      )}
+
       {roomArchive && <section className={`archive-status archive-status--${roomArchive.status}`} aria-live="polite">
         <div><Archive size={20} /><div><strong>{roomArchive.status === 'ready' ? 'Архів готовий' : roomArchive.status === 'failed' ? 'Не вдалося створити архів' : roomArchive.status === 'pending' ? 'Архів у черзі' : 'Збираємо оригінали'}</strong><span>{roomArchive.status === 'ready' ? `${roomArchive.total_files} файлів · ${bytes(roomArchive.size_bytes ?? roomArchive.total_bytes)}` : roomArchive.status === 'failed' ? 'Натисніть «Повторити ZIP»' : `${roomArchive.processed_files} із ${roomArchive.total_files} файлів`}</span></div></div>
         <div className="archive-progress"><span style={{ width: `${roomArchive.total_files ? (roomArchive.processed_files / roomArchive.total_files) * 100 : 0}%` }} /></div>
       </section>}
 
-      {gallery.length ? (
+      {filteredGallery.length ? (
         <>
-          <section className="gallery-grid">
-            {gallery.map((item) => <GalleryCard key={item.id} item={item} onDelete={deleteItem} onOpen={openMedia} onError={setError} />)}
-          </section>
+          <div className="gallery-groups">
+            {galleryGroups.map((group) => (
+              <section className="gallery-group" key={group.key} aria-labelledby={`gallery-day-${group.key}`}>
+                <header><h3 id={`gallery-day-${group.key}`}>{group.label}</h3><span>{group.items.length}</span></header>
+                <div className="gallery-grid">
+                  {group.items.map((item) => <GalleryCard key={item.id} item={item} onDelete={deleteItem} onOpen={openMedia} onError={setError} />)}
+                </div>
+              </section>
+            ))}
+          </div>
           {hasMore && <button className="secondary-button load-more" onClick={() => void loadGallery(true, cursor)}>Показати більше</button>}
         </>
       ) : (
         <section className="empty-gallery">
           <ImagePlus size={36} strokeWidth={1.5} />
-          <h2>Тут ще немає медіа</h2>
-          <p>{room.accepting_uploads ? 'Додайте перші фото або відео з події.' : 'Власник кімнати закрив завантаження.'}</p>
-          {room.accepting_uploads && <button className="text-link" onClick={() => inputRef.current?.click()}>Вибрати з галереї</button>}
+          <h2>{gallery.length ? 'Тут поки порожньо' : 'Тут ще немає медіа'}</h2>
+          <p>{gallery.length ? 'У вибраному фільтрі немає файлів.' : room.accepting_uploads ? 'Додайте перші фото або відео з події.' : 'Власник кімнати закрив завантаження.'}</p>
+          {gallery.length ? <button className="text-link" onClick={() => setGalleryFilter('all')}>Показати всі</button> : room.accepting_uploads && <button className="text-link" onClick={() => inputRef.current?.click()}>Вибрати з галереї</button>}
         </section>
       )}
 
@@ -1345,7 +1419,7 @@ function RoomPage() {
         </div>
       )}
 
-      {selectedMedia && <MediaViewer item={selectedMedia} items={gallery} onSelect={openMedia} onClose={closeMedia} onError={setError} />}
+      {selectedMedia && <MediaViewer item={selectedMedia} items={filteredGallery} onSelect={openMedia} onClose={closeMedia} onError={setError} />}
 
       {settings && (
         <div className="dialog-backdrop" role="presentation" onMouseDown={() => setSettings(false)}>

@@ -515,6 +515,17 @@ a:focus-visible {
 .storage-line { height: 6px; margin: 0 clamp(20px, 4vw, 56px) 26px; overflow: hidden; border-radius: 6px; background: rgb(118 118 128 / 10%); }
 .storage-line span { height: 100%; display: block; border-radius: 6px; background: linear-gradient(90deg, #12a1ff, var(--blue), var(--violet)); box-shadow: 0 0 14px rgb(0 113 227 / 30%); }
 
+.gallery-filters { margin: 0 clamp(20px, 4vw, 56px) 28px; padding: 4px; display: flex; width: fit-content; max-width: calc(100% - 40px); gap: 3px; overflow-x: auto; border: 1px solid rgb(118 118 128 / 10%); border-radius: var(--radius-pill); background: rgb(118 118 128 / 8%); scrollbar-width: none; }
+.gallery-filters::-webkit-scrollbar { display: none; }
+.gallery-filters button { min-height: 38px; padding: 7px 13px; display: inline-flex; align-items: center; gap: 7px; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--muted); font: inherit; font-size: 13px; font-weight: 650; white-space: nowrap; cursor: pointer; transition: background 180ms ease, box-shadow 180ms ease, color 180ms ease; }
+.gallery-filters button small { min-width: 19px; padding: 2px 5px; border-radius: var(--radius-pill); background: rgb(118 118 128 / 10%); color: inherit; font-size: 10px; text-align: center; }
+.gallery-filters button.is-active { background: #fff; box-shadow: 0 3px 12px rgb(35 45 70 / 10%); color: var(--blue); }
+.gallery-groups { display: grid; gap: 32px; padding-bottom: 54px; }
+.gallery-group > header { margin: 0 clamp(20px, 4vw, 56px) 12px; padding-bottom: 9px; display: flex; align-items: baseline; gap: 8px; border-bottom: 1px solid rgb(60 60 67 / 10%); }
+.gallery-group > header h3 { margin: 0; font-size: 17px; letter-spacing: -.025em; }
+.gallery-group > header span { color: var(--muted); font-size: 11px; }
+.gallery-group .gallery-grid { padding-bottom: 0; }
+
 .gallery-grid {
   padding: 0 clamp(20px, 4vw, 56px) 64px;
   display: grid;
@@ -753,7 +764,11 @@ a:focus-visible {
   .gallery-toolbar .archive-button small { display: block; line-height: 10px; }
   .archive-status { margin: 10px 12px 18px; }
   .storage-line { margin-inline: 18px; }
+  .gallery-filters { margin: 0 12px 24px; max-width: calc(100% - 24px); }
+  .gallery-groups { gap: 26px; padding-bottom: 42px; }
+  .gallery-group > header { margin-inline: 12px; }
   .gallery-grid { padding: 0 12px 44px; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 7px; }
+  .gallery-group .gallery-grid { padding-bottom: 0; }
   .media-card { padding: 5px; border-radius: 20px; }
   .media-preview { border-radius: 16px; }
   .media-meta { padding-top: 7px; }

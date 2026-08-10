@@ -107,6 +107,7 @@ export interface UploadProgress {
   idempotency_key: string
   upload_id?: string
   completed_parts?: Array<{ part_number: number; etag: string }>
+  captured_at?: string | null
   created_at: string
   progress: number
   state: 'queued' | 'uploading' | 'paused' | 'waiting_file' | 'done' | 'error'

@@ -22,6 +22,7 @@ export interface Room {
   role: 'owner' | 'member'
   status: 'active' | 'deleting'
   accepting_uploads: boolean
+  accepting_members: boolean
   max_files: number
   max_storage_bytes: number
   used_files: number
@@ -35,6 +36,7 @@ export interface RoomPreview {
   name: string
   access_mode: AccessMode
   status: string
+  accepting_members: boolean
   expires_at: string
 }
 

@@ -485,7 +485,9 @@ function JoinRoom({ preview, onJoined }: { preview: RoomPreview; onJoined: (room
         <p className="eyebrow">Кімната {preview.slug}</p>
         <h1>{preview.name}</h1>
         <p>Медіа зберігаються до {new Date(preview.expires_at).toLocaleString('uk-UA', { dateStyle: 'long', timeStyle: 'short' })}.</p>
-        <form onSubmit={submit}>
+        {!preview.accepting_members ? (
+          <div className="joining-closed"><LockKeyhole size={24} /><div><strong>Кімната закрита для нових учасників</strong><span>Власник тимчасово вимкнув приєднання за посиланням.</span></div></div>
+        ) : <form onSubmit={submit}>
           {!session && <IdentityField value={displayName} onChange={setDisplayName} />}
           {preview.access_mode !== 'public' && (
             <label className="field">
@@ -505,7 +507,7 @@ function JoinRoom({ preview, onJoined }: { preview: RoomPreview; onJoined: (room
             {preview.access_mode === 'public' ? <LogIn size={19} /> : <LockKeyhole size={19} />}
             {busy ? 'Входимо…' : 'Увійти до кімнати'}
           </button>
-        </form>
+        </form>}
       </section>
     </main>
   )
@@ -855,6 +857,13 @@ function RoomPage() {
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const [settings, setSettings] = useState(false)
+  const [settingsName, setSettingsName] = useState('')
+  const [settingsAccessMode, setSettingsAccessMode] = useState<AccessMode>('public')
+  const [settingsSecret, setSettingsSecret] = useState('')
+  const [settingsAccessDirty, setSettingsAccessDirty] = useState(false)
+  const [settingsLifetime, setSettingsLifetime] = useState(1)
+  const [settingsBusy, setSettingsBusy] = useState(false)
+  const [settingsError, setSettingsError] = useState('')
   const [shareDialog, setShareDialog] = useState(false)
   const [membersOpen, setMembersOpen] = useState(false)
   const [members, setMembers] = useState<RoomMember[]>([])
@@ -962,12 +971,20 @@ function RoomPage() {
 
   useEffect(() => {
     if (!settings) return
+    if (room) {
+      setSettingsName(room.name)
+      setSettingsAccessMode(room.access_mode)
+      setSettingsSecret('')
+      setSettingsAccessDirty(false)
+      setSettingsLifetime(Math.max(1, Math.min(3, Math.round((new Date(room.expires_at).getTime() - new Date(room.created_at).getTime()) / (24 * 60 * 60 * 1000)))))
+      setSettingsError('')
+    }
     const previousFocus = document.activeElement as HTMLElement | null
     settingsCloseRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setSettings(false) }
     document.addEventListener('keydown', onKeyDown)
     return () => { document.removeEventListener('keydown', onKeyDown); previousFocus?.focus() }
-  }, [settings])
+  }, [room, settings])
 
   useEffect(() => {
     if (!membersOpen) return
@@ -1149,6 +1166,41 @@ function RoomPage() {
       const result = await rooms.update(slug, { accepting_uploads: !room.accepting_uploads })
       setRoom(result.room)
     } catch (cause) { setError(errorMessage(cause)) }
+  }
+
+  async function toggleMembers() {
+    if (!room) return
+    try {
+      const result = await rooms.update(slug, { accepting_members: !room.accepting_members })
+      setRoom(result.room)
+    } catch (cause) { setSettingsError(errorMessage(cause)) }
+  }
+
+  async function saveRoomSettings() {
+    if (!room || settingsBusy) return
+    const trimmedName = settingsName.trim()
+    if (!trimmedName) { setSettingsError('Вкажіть назву кімнати'); return }
+    if (settingsAccessDirty && settingsAccessMode !== 'public') {
+      const valid = settingsAccessMode === 'pin' ? /^\d{4,8}$/.test(settingsSecret) : settingsSecret.length >= 6
+      if (!valid) { setSettingsError(settingsAccessMode === 'pin' ? 'PIN має містити 4–8 цифр' : 'Пароль має містити щонайменше 6 символів'); return }
+    }
+    const currentLifetime = Math.max(1, Math.min(3, Math.round((new Date(room.expires_at).getTime() - new Date(room.created_at).getTime()) / (24 * 60 * 60 * 1000))))
+    const input: Partial<{ name: string; access: { mode: AccessMode; secret: string }; lifetime_days: number }> = {}
+    if (trimmedName !== room.name) input.name = trimmedName
+    if (settingsAccessDirty) input.access = { mode: settingsAccessMode, secret: settingsAccessMode === 'public' ? '' : settingsSecret }
+    if (settingsLifetime > currentLifetime) input.lifetime_days = settingsLifetime
+    if (!Object.keys(input).length) { setSettings(false); return }
+    setSettingsBusy(true)
+    setSettingsError('')
+    try {
+      const result = await rooms.update(slug, input)
+      setRoom(result.room)
+      setSettings(false)
+    } catch (cause) {
+      setSettingsError(errorMessage(cause))
+    } finally {
+      setSettingsBusy(false)
+    }
   }
 
   async function openMembers() {
@@ -1511,8 +1563,19 @@ function RoomPage() {
         <div className="dialog-backdrop" role="presentation" onMouseDown={() => setSettings(false)}>
           <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
             <header><h2 id="settings-title">Налаштування</h2><button ref={settingsCloseRef} className="icon-button" onClick={() => setSettings(false)} aria-label="Закрити"><X /></button></header>
+            <div className="settings-editor">
+              <label className="field"><span>Назва кімнати</span><input value={settingsName} maxLength={120} onChange={(event) => setSettingsName(event.target.value)} /></label>
+              <fieldset className="field"><legend>Доступ</legend><div className="segmented segmented--three">
+                {([['public', 'Без пароля'], ['pin', 'PIN'], ['password', 'Пароль']] as const).map(([value, label]) => <button type="button" className={settingsAccessMode === value ? 'is-active' : ''} onClick={() => { setSettingsAccessMode(value); setSettingsAccessDirty(value !== room.access_mode || settingsSecret.length > 0) }} key={value}>{label}</button>)}
+              </div></fieldset>
+              {settingsAccessMode !== 'public' && <label className="field"><span>{settingsAccessMode === room.access_mode ? `Новий ${settingsAccessMode === 'pin' ? 'PIN-код' : 'пароль'} (необов’язково)` : settingsAccessMode === 'pin' ? 'Новий PIN-код' : 'Новий пароль'}</span><input type={settingsAccessMode === 'pin' ? 'tel' : 'password'} inputMode={settingsAccessMode === 'pin' ? 'numeric' : undefined} value={settingsSecret} maxLength={settingsAccessMode === 'pin' ? 8 : 72} placeholder={settingsAccessMode === room.access_mode ? 'Залиште порожнім без змін' : settingsAccessMode === 'pin' ? '4–8 цифр' : 'Щонайменше 6 символів'} onChange={(event) => { setSettingsSecret(settingsAccessMode === 'pin' ? event.target.value.replace(/\D/g, '') : event.target.value); setSettingsAccessDirty(true) }} /></label>}
+              <fieldset className="field lifetime-field"><legend>Автовидалення від створення</legend><div className="lifetime-value"><strong>{settingsLifetime}</strong><span>{settingsLifetime === 1 ? 'день' : 'дні'}</span></div><input className="lifetime-slider" type="range" min={Math.max(1, Math.round((new Date(room.expires_at).getTime() - new Date(room.created_at).getTime()) / (24 * 60 * 60 * 1000)))} max="3" step="1" value={settingsLifetime} disabled={settingsLifetime >= 3} onChange={(event) => setSettingsLifetime(Number(event.target.value))} style={{ '--slider-progress': `${(settingsLifetime - 1) * 50}%` } as CSSProperties} /><div className="slider-labels"><span>Поточний строк</span><span>Максимум 3 дні</span></div></fieldset>
+              {settingsError && <p className="form-error" role="alert">{settingsError}</p>}
+              <button className="primary-button" onClick={() => void saveRoomSettings()} disabled={settingsBusy}>{settingsBusy ? 'Зберігаємо…' : 'Зберегти зміни'}</button>
+            </div>
             <div className="setting-row"><div><strong>Учасники кімнати</strong><span>Перегляньте всіх, хто приєднався за посиланням або QR-кодом.</span></div><button className="secondary-button primary-button--fit" onClick={() => void openMembers()}><Users size={17} /> Переглянути</button></div>
-            <div className="setting-row"><div><strong>Приймати нові файли</strong><span>Учасники бачитимуть галерею, але не зможуть завантажувати медіа.</span></div><button className={`switch ${room.accepting_uploads ? 'on' : ''}`} role="switch" aria-checked={room.accepting_uploads} onClick={toggleUploads}><span /></button></div>
+            <div className="setting-row"><div><strong>Приймати нових учасників</strong><span>Вимкніть, щоб нові люди не могли приєднатися за старим посиланням.</span></div><button className={`switch ${room.accepting_members ? 'on' : ''}`} role="switch" aria-checked={room.accepting_members} onClick={() => void toggleMembers()}><span /></button></div>
+            <div className="setting-row"><div><strong>Приймати нові файли</strong><span>Учасники бачитимуть галерею, але не зможуть завантажувати медіа.</span></div><button className={`switch ${room.accepting_uploads ? 'on' : ''}`} role="switch" aria-checked={room.accepting_uploads} onClick={() => void toggleUploads()}><span /></button></div>
             <div className="setting-row setting-row--danger"><div><strong>Видалити кімнату</strong><span>Усі оригінали та дані буде видалено без можливості відновлення.</span></div><button className="danger-button" onClick={deleteRoom}><Trash2 size={17} /> Видалити</button></div>
           </section>
         </div>

@@ -176,7 +176,7 @@ export const rooms = {
     method: 'POST', body: JSON.stringify({ identity_id: identityID }),
   }),
   activity: (slug: string) => api<{ events: RoomActivityEvent[] }>(`/rooms/${slug}/activity`),
-  update: (slug: string, input: Partial<{ name: string; accepting_uploads: boolean }>) =>
+  update: (slug: string, input: Partial<{ name: string; accepting_uploads: boolean; accepting_members: boolean; access: { mode: AccessMode; secret: string }; lifetime_days: number }>) =>
     api<{ room: Room }>(`/rooms/${slug}`, { method: 'PATCH', body: JSON.stringify(input) }),
   remove: (slug: string) => api<void>(`/rooms/${slug}`, { method: 'DELETE' }),
 }

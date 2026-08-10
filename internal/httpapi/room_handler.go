@@ -31,7 +31,9 @@ type joinRoomRequest struct {
 type updateRoomRequest struct {
 	Name             *string            `json:"name"`
 	AcceptingUploads *bool              `json:"accepting_uploads"`
+	AcceptingMembers *bool              `json:"accepting_members"`
 	Access           *roomAccessRequest `json:"access"`
+	LifetimeDays     *int               `json:"lifetime_days"`
 }
 
 type transferOwnershipRequest struct {
@@ -226,7 +228,7 @@ func (handler roomHandler) update(response http.ResponseWriter, request *http.Re
 		access = &room.AccessUpdate{Mode: input.Access.Mode, Secret: input.Access.Secret}
 	}
 	updated, err := handler.service.Update(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), room.UpdateInput{
-		Name: input.Name, AcceptingUploads: input.AcceptingUploads, Access: access,
+		Name: input.Name, AcceptingUploads: input.AcceptingUploads, AcceptingMembers: input.AcceptingMembers, Access: access, LifetimeDays: input.LifetimeDays,
 	})
 	if err != nil {
 		handler.writeError(response, request, err)
@@ -264,6 +266,8 @@ func (handler roomHandler) writeError(response http.ResponseWriter, request *htt
 		writeAPIError(response, request, http.StatusForbidden, "ROOM_OWNER_REQUIRED", "Only the room owner can perform this action")
 	case errors.Is(err, room.ErrMemberBlocked):
 		writeAPIError(response, request, http.StatusForbidden, "ROOM_MEMBER_BLOCKED", "You were removed from this room by its owner")
+	case errors.Is(err, room.ErrJoiningClosed):
+		writeAPIError(response, request, http.StatusForbidden, "ROOM_JOINING_CLOSED", "The room is closed to new members")
 	case errors.Is(err, room.ErrMemberNotFound):
 		writeAPIError(response, request, http.StatusNotFound, "ROOM_MEMBER_NOT_FOUND", "Room member not found")
 	case errors.Is(err, room.ErrMemberNotBlocked):

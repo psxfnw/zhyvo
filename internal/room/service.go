@@ -26,6 +26,7 @@ var (
 	ErrOwnerRequired       = errors.New("room owner permission required")
 	ErrMemberNotFound      = errors.New("room member not found")
 	ErrMemberBlocked       = errors.New("identity is blocked from this room")
+	ErrJoiningClosed       = errors.New("room is closed to new members")
 	ErrCannotRemoveOwner   = errors.New("room owner cannot be removed")
 	ErrMemberNotBlocked    = errors.New("room member is not blocked")
 	ErrIdempotencyConflict = errors.New("idempotency key was already used with different input")
@@ -53,7 +54,9 @@ type AccessUpdate struct {
 type UpdateInput struct {
 	Name             *string
 	AcceptingUploads *bool
+	AcceptingMembers *bool
 	Access           *AccessUpdate
+	LifetimeDays     *int
 }
 
 type Room struct {
@@ -64,6 +67,7 @@ type Room struct {
 	Role             string    `json:"role"`
 	Status           string    `json:"status"`
 	AcceptingUploads bool      `json:"accepting_uploads"`
+	AcceptingMembers bool      `json:"accepting_members"`
 	MaxFiles         int       `json:"max_files"`
 	MaxStorageBytes  int64     `json:"max_storage_bytes"`
 	UsedFiles        int       `json:"used_files"`
@@ -73,11 +77,12 @@ type Room struct {
 }
 
 type Preview struct {
-	Slug       string    `json:"slug"`
-	Name       string    `json:"name"`
-	AccessMode string    `json:"access_mode"`
-	Status     string    `json:"status"`
-	ExpiresAt  time.Time `json:"expires_at"`
+	Slug             string    `json:"slug"`
+	Name             string    `json:"name"`
+	AccessMode       string    `json:"access_mode"`
+	Status           string    `json:"status"`
+	AcceptingMembers bool      `json:"accepting_members"`
+	ExpiresAt        time.Time `json:"expires_at"`
 }
 
 type Member struct {
@@ -198,10 +203,10 @@ func (s *Service) Create(ctx context.Context, ownerID, idempotencyKey uuid.UUID,
 func (s *Service) Preview(ctx context.Context, slug string) (Preview, error) {
 	var preview Preview
 	err := s.db.QueryRow(ctx, `
-		SELECT slug, name, access_mode, status, expires_at
+		SELECT slug, name, access_mode, status, accepting_members, expires_at
 		FROM rooms
 		WHERE slug = $1
-	`, normalizeSlug(slug)).Scan(&preview.Slug, &preview.Name, &preview.AccessMode, &preview.Status, &preview.ExpiresAt)
+	`, normalizeSlug(slug)).Scan(&preview.Slug, &preview.Name, &preview.AccessMode, &preview.Status, &preview.AcceptingMembers, &preview.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Preview{}, ErrNotFound
 	}
@@ -217,7 +222,7 @@ func (s *Service) Preview(ctx context.Context, slug string) (Preview, error) {
 func (s *Service) List(ctx context.Context, identityID uuid.UUID) ([]Room, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT r.id, r.slug, r.name, r.access_mode, rm.role, r.status,
-		       r.accepting_uploads, r.max_files, r.max_storage_bytes,
+		       r.accepting_uploads, r.accepting_members, r.max_files, r.max_storage_bytes,
 		       r.used_files, r.used_storage_bytes, r.created_at, r.expires_at
 		FROM room_members rm
 		JOIN rooms r ON r.id = rm.room_id
@@ -237,7 +242,7 @@ func (s *Service) List(ctx context.Context, identityID uuid.UUID) ([]Room, error
 		var item Room
 		if err := rows.Scan(
 			&item.ID, &item.Slug, &item.Name, &item.AccessMode, &item.Role, &item.Status,
-			&item.AcceptingUploads, &item.MaxFiles, &item.MaxStorageBytes,
+			&item.AcceptingUploads, &item.AcceptingMembers, &item.MaxFiles, &item.MaxStorageBytes,
 			&item.UsedFiles, &item.UsedStorageBytes, &item.CreatedAt, &item.ExpiresAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan listed room: %w", err)
@@ -322,12 +327,13 @@ func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret s
 	var accessMode, status string
 	var secretHash *string
 	var expiresAt time.Time
+	var acceptingMembers bool
 	err = tx.QueryRow(ctx, `
-		SELECT id, access_mode, access_secret_hash, status, expires_at
+		SELECT id, access_mode, access_secret_hash, status, accepting_members, expires_at
 		FROM rooms
 		WHERE slug = $1
 		FOR UPDATE
-	`, normalizeSlug(slug)).Scan(&roomID, &accessMode, &secretHash, &status, &expiresAt)
+	`, normalizeSlug(slug)).Scan(&roomID, &accessMode, &secretHash, &status, &acceptingMembers, &expiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
@@ -348,6 +354,17 @@ func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret s
 	if blocked {
 		return Room{}, ErrMemberBlocked
 	}
+	var alreadyMember bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM room_members WHERE room_id = $1 AND identity_id = $2
+		)
+	`, roomID, identityID).Scan(&alreadyMember); err != nil {
+		return Room{}, fmt.Errorf("check room membership: %w", err)
+	}
+	if !acceptingMembers && !alreadyMember {
+		return Room{}, ErrJoiningClosed
+	}
 	if accessMode != "public" {
 		if secretHash == nil {
 			return Room{}, errors.New("protected room has no secret hash")
@@ -361,14 +378,6 @@ func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret s
 		}
 	}
 
-	var alreadyMember bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM room_members WHERE room_id = $1 AND identity_id = $2
-		)
-	`, roomID, identityID).Scan(&alreadyMember); err != nil {
-		return Room{}, fmt.Errorf("check room membership: %w", err)
-	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO room_members (room_id, identity_id, role)
 		VALUES ($1, $2, 'member')
@@ -392,14 +401,14 @@ func (s *Service) Get(ctx context.Context, identityID uuid.UUID, slug string) (R
 	var result Room
 	err := s.db.QueryRow(ctx, `
 		SELECT r.id, r.slug, r.name, r.access_mode, rm.role, r.status,
-		       r.accepting_uploads, r.max_files, r.max_storage_bytes,
+		       r.accepting_uploads, r.accepting_members, r.max_files, r.max_storage_bytes,
 		       r.used_files, r.used_storage_bytes, r.created_at, r.expires_at
 		FROM rooms r
 		JOIN room_members rm ON rm.room_id = r.id AND rm.identity_id = $1
 		WHERE r.slug = $2
 	`, identityID, normalizeSlug(slug)).Scan(
 		&result.ID, &result.Slug, &result.Name, &result.AccessMode, &result.Role, &result.Status,
-		&result.AcceptingUploads, &result.MaxFiles, &result.MaxStorageBytes,
+		&result.AcceptingUploads, &result.AcceptingMembers, &result.MaxFiles, &result.MaxStorageBytes,
 		&result.UsedFiles, &result.UsedStorageBytes, &result.CreatedAt, &result.ExpiresAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -422,8 +431,11 @@ func (s *Service) Get(ctx context.Context, identityID uuid.UUID, slug string) (R
 }
 
 func (s *Service) Update(ctx context.Context, identityID uuid.UUID, slug string, input UpdateInput) (Room, error) {
-	if input.Name == nil && input.AcceptingUploads == nil && input.Access == nil {
+	if input.Name == nil && input.AcceptingUploads == nil && input.AcceptingMembers == nil && input.Access == nil && input.LifetimeDays == nil {
 		return Room{}, fmt.Errorf("%w: at least one field is required", ErrInvalidInput)
+	}
+	if input.LifetimeDays != nil && (*input.LifetimeDays < 1 || *input.LifetimeDays > 3) {
+		return Room{}, fmt.Errorf("%w: lifetime_days must be between 1 and 3", ErrInvalidInput)
 	}
 	var name string
 	if input.Name != nil {
@@ -455,14 +467,14 @@ func (s *Service) Update(ctx context.Context, identityID uuid.UUID, slug string,
 	defer func() { _ = tx.Rollback(ctx) }()
 	var roomID uuid.UUID
 	var role, status string
-	var expiresAt time.Time
+	var expiresAt, createdAt time.Time
 	err = tx.QueryRow(ctx, `
-		SELECT r.id, rm.role, r.status, r.expires_at
+		SELECT r.id, rm.role, r.status, r.created_at, r.expires_at
 		FROM rooms r
 		JOIN room_members rm ON rm.room_id = r.id AND rm.identity_id = $1
 		WHERE r.slug = $2
 		FOR UPDATE OF r
-	`, identityID, normalizeSlug(slug)).Scan(&roomID, &role, &status, &expiresAt)
+	`, identityID, normalizeSlug(slug)).Scan(&roomID, &role, &status, &createdAt, &expiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
@@ -475,18 +487,29 @@ func (s *Service) Update(ctx context.Context, identityID uuid.UUID, slug string,
 	if status != "active" || !expiresAt.After(s.now()) {
 		return Room{}, ErrExpired
 	}
+	var updatedExpiry time.Time
+	if input.LifetimeDays != nil {
+		updatedExpiry = createdAt.Add(time.Duration(*input.LifetimeDays) * 24 * time.Hour)
+		if updatedExpiry.Before(expiresAt) {
+			return Room{}, fmt.Errorf("%w: room lifetime can only be extended", ErrInvalidInput)
+		}
+	}
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE rooms
 		SET name = CASE WHEN $2 THEN $3 ELSE name END,
 		    accepting_uploads = CASE WHEN $4 THEN $5 ELSE accepting_uploads END,
-		    access_mode = CASE WHEN $6 THEN $7 ELSE access_mode END,
-		    access_secret_hash = CASE WHEN $6 THEN $8 ELSE access_secret_hash END
+		    accepting_members = CASE WHEN $6 THEN $7 ELSE accepting_members END,
+		    access_mode = CASE WHEN $8 THEN $9 ELSE access_mode END,
+		    access_secret_hash = CASE WHEN $8 THEN $10 ELSE access_secret_hash END,
+		    expires_at = CASE WHEN $11 THEN $12 ELSE expires_at END
 		WHERE id = $1
 	`, roomID,
 		input.Name != nil, name,
 		input.AcceptingUploads != nil, input.AcceptingUploads,
+		input.AcceptingMembers != nil, input.AcceptingMembers,
 		input.Access != nil, accessMode, accessHash,
+		input.LifetimeDays != nil, updatedExpiry,
 	); err != nil {
 		return Room{}, fmt.Errorf("update room: %w", err)
 	}
@@ -682,7 +705,7 @@ func (s *Service) Delete(ctx context.Context, identityID uuid.UUID, slug string)
 	}
 	result, err := s.db.Exec(ctx, `
 		UPDATE rooms
-		SET status = 'deleting', accepting_uploads = false
+		SET status = 'deleting', accepting_uploads = false, accepting_members = false
 		WHERE slug = $1 AND owner_identity_id = $2 AND status = 'active'
 	`, normalizeSlug(slug), identityID)
 	if err != nil {
@@ -791,14 +814,14 @@ func existingIdempotentRoom(ctx context.Context, tx pgx.Tx, identityID, key uuid
 	var result Room
 	err := tx.QueryRow(ctx, `
 		SELECT r.id, r.slug, r.name, r.access_mode, rm.role, r.status,
-		       r.accepting_uploads, r.max_files, r.max_storage_bytes,
+		       r.accepting_uploads, r.accepting_members, r.max_files, r.max_storage_bytes,
 		       r.used_files, r.used_storage_bytes, r.created_at, r.expires_at
 		FROM rooms r
 		JOIN room_members rm ON rm.room_id = r.id AND rm.identity_id = $1
 		WHERE r.id = $2
 	`, identityID, roomID).Scan(
 		&result.ID, &result.Slug, &result.Name, &result.AccessMode, &result.Role, &result.Status,
-		&result.AcceptingUploads, &result.MaxFiles, &result.MaxStorageBytes,
+		&result.AcceptingUploads, &result.AcceptingMembers, &result.MaxFiles, &result.MaxStorageBytes,
 		&result.UsedFiles, &result.UsedStorageBytes, &result.CreatedAt, &result.ExpiresAt,
 	)
 	if err != nil {
@@ -816,11 +839,11 @@ func insertRoom(ctx context.Context, tx pgx.Tx, slug string, ownerID uuid.UUID, 
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (slug) DO NOTHING
-		RETURNING id, slug, name, access_mode, status, accepting_uploads,
+		RETURNING id, slug, name, access_mode, status, accepting_uploads, accepting_members,
 		          max_files, max_storage_bytes, used_files, used_storage_bytes, created_at, expires_at
 	`, slug, input.Name, ownerID, input.AccessMode, secretHash, createdAt, expiresAt).Scan(
 		&result.ID, &result.Slug, &result.Name, &result.AccessMode, &result.Status,
-		&result.AcceptingUploads, &result.MaxFiles, &result.MaxStorageBytes,
+		&result.AcceptingUploads, &result.AcceptingMembers, &result.MaxFiles, &result.MaxStorageBytes,
 		&result.UsedFiles, &result.UsedStorageBytes, &result.CreatedAt, &result.ExpiresAt,
 	)
 	return result, err

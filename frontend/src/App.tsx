@@ -543,8 +543,11 @@ function UploadQueue({ uploads, onCancel, onPause, onRetry }: {
   )
 }
 
-function GalleryCard({ item, onDelete, onOpen, onError }: {
+function GalleryCard({ item, selectionMode, selected, onToggle, onDelete, onOpen, onError }: {
   item: GalleryItem
+  selectionMode: boolean
+  selected: boolean
+  onToggle: (item: GalleryItem) => void
   onDelete: (item: GalleryItem) => void
   onOpen: (item: GalleryItem) => void
   onError: (message: string) => void
@@ -562,12 +565,13 @@ function GalleryCard({ item, onDelete, onOpen, onError }: {
     }
   }
   return (
-    <article className="media-card">
-      <button className="media-preview" type="button" onClick={() => onOpen(item)} aria-label={`Відкрити ${item.original_filename}`}>
+    <article className={`media-card ${selected ? 'media-card--selected' : ''}`}>
+      <button className="media-preview" type="button" onClick={() => selectionMode ? onToggle(item) : onOpen(item)} aria-label={selectionMode ? `${selected ? 'Зняти вибір із' : 'Вибрати'} ${item.original_filename}` : `Відкрити ${item.original_filename}`}>
         {item.thumbnail_url ? <img src={item.thumbnail_url} alt={item.original_filename} loading="lazy" /> : (
           <div className="media-placeholder">{item.media_type === 'video' ? <Video /> : <FileImage />}<span>Готуємо прев’ю</span></div>
         )}
         {item.media_type === 'video' && <span className="video-badge"><Video size={14} /> Відео</span>}
+        {selectionMode && <span className={`media-select ${selected ? 'is-selected' : ''}`} aria-hidden="true">{selected && <Check size={16} />}</span>}
       </button>
       <div className="media-meta">
         <div><strong title={item.original_filename}>{item.original_filename}</strong><span>{item.uploaded_by.display_name} · {bytes(item.size_bytes)}</span></div>
@@ -583,18 +587,19 @@ function GalleryCard({ item, onDelete, onOpen, onError }: {
 const MOBILE_BATCH_FILES = 10
 const MOBILE_BATCH_BYTES = 128 * 1024 * 1024
 
-function MobileSaveDialog({ slug, roomName, onClose, onError }: {
+function MobileSaveDialog({ slug, roomName, initialItems, onClose, onError }: {
   slug: string
   roomName: string
+  initialItems?: GalleryItem[]
   onClose: () => void
   onError: (message: string) => void
 }) {
-  const [items, setItems] = useState<GalleryItem[]>([])
+  const [items, setItems] = useState<GalleryItem[]>(initialItems ?? [])
   const [offset, setOffset] = useState(0)
   const [prepared, setPrepared] = useState<File[]>([])
   const [preparing, setPreparing] = useState(false)
   const [progress, setProgress] = useState(0)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!initialItems)
   const [savedOneByOne, setSavedOneByOne] = useState(0)
   const closeRef = useRef<HTMLButtonElement>(null)
   const supportsBatchShare = canShareFiles([new File([''], 'zhyvo.jpg', { type: 'image/jpeg' })])
@@ -602,6 +607,7 @@ function MobileSaveDialog({ slug, roomName, onClose, onError }: {
   useEffect(() => {
     let active = true
     async function loadItems() {
+      if (initialItems) return
       try {
         const all: GalleryItem[] = []
         let cursor: string | null = null
@@ -617,10 +623,10 @@ function MobileSaveDialog({ slug, roomName, onClose, onError }: {
         if (active) setLoading(false)
       }
     }
-    void loadItems()
+    if (!initialItems) void loadItems()
     closeRef.current?.focus()
     return () => { active = false }
-  }, [onError, slug])
+  }, [initialItems, onError, slug])
 
   function nextBatch() {
     const batch: GalleryItem[] = []
@@ -685,7 +691,7 @@ function MobileSaveDialog({ slug, roomName, onClose, onError }: {
     <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="mobile-save-dialog" role="dialog" aria-modal="true" aria-labelledby="mobile-save-title" onMouseDown={(event) => event.stopPropagation()}>
         <header>
-          <div><p className="eyebrow">Оригінальна якість</p><h2 id="mobile-save-title">Зберегти на телефон</h2></div>
+          <div><p className="eyebrow">Оригінальна якість</p><h2 id="mobile-save-title">{initialItems ? 'Зберегти вибране' : 'Зберегти на телефон'}</h2></div>
           <button ref={closeRef} className="icon-button" onClick={onClose} aria-label="Закрити"><X /></button>
         </header>
         <div className="mobile-save-body">
@@ -839,6 +845,9 @@ function RoomPage() {
   const [preview, setPreview] = useState<RoomPreview | null>(null)
   const [gallery, setGallery] = useState<GalleryItem[]>([])
   const [galleryFilter, setGalleryFilter] = useState<GalleryFilter>('all')
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedMediaIDs, setSelectedMediaIDs] = useState<Set<string>>(new Set())
+  const [batchBusy, setBatchBusy] = useState(false)
   const [cursor, setCursor] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
   const [uploads, setUploads] = useState<UploadProgress[]>([])
@@ -854,6 +863,7 @@ function RoomPage() {
   const [roomArchive, setRoomArchive] = useState<RoomArchive | null>(null)
   const [archiveBusy, setArchiveBusy] = useState(false)
   const [mobileSaveOpen, setMobileSaveOpen] = useState(false)
+  const [mobileSaveItems, setMobileSaveItems] = useState<GalleryItem[] | undefined>()
   const [membersTab, setMembersTab] = useState<'members' | 'activity'>('members')
   const [memberActionID, setMemberActionID] = useState<string | null>(null)
   const [membersLoading, setMembersLoading] = useState(false)
@@ -1217,6 +1227,66 @@ function RoomPage() {
     } catch (cause) { setError(errorMessage(cause)) }
   }
 
+  function toggleMediaSelection(item: GalleryItem) {
+    setSelectedMediaIDs((current) => {
+      const next = new Set(current)
+      if (next.has(item.id)) next.delete(item.id)
+      else next.add(item.id)
+      return next
+    })
+  }
+
+  function closeSelection() {
+    setSelectionMode(false)
+    setSelectedMediaIDs(new Set())
+  }
+
+  async function saveSelected(items: GalleryItem[]) {
+    if (!items.length) return
+    if (isMobileDevice()) {
+      setMobileSaveItems(items)
+      setMobileSaveOpen(true)
+      return
+    }
+    setBatchBusy(true)
+    setError('')
+    try {
+      for (const item of items) {
+        const remote = await media.download(item.id)
+        await saveRemoteFile({ ...remote, mimeType: item.mime_type })
+      }
+      closeSelection()
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  async function deleteSelected(items: GalleryItem[]) {
+    const deletable = items.filter((item) => item.permissions.can_delete)
+    if (!deletable.length || !window.confirm(`Видалити ${deletable.length} вибраних ${deletable.length === 1 ? 'файл' : 'файлів'} назавжди?`)) return
+    setBatchBusy(true)
+    setError('')
+    try {
+      for (const item of deletable) await media.remove(item.id)
+      const deletedIDs = new Set(deletable.map((item) => item.id))
+      setGallery((current) => current.filter((item) => !deletedIDs.has(item.id)))
+      setRoom((current) => current ? {
+        ...current,
+        used_files: Math.max(0, current.used_files - deletable.length),
+        used_storage_bytes: Math.max(0, current.used_storage_bytes - deletable.reduce((sum, item) => sum + item.size_bytes, 0)),
+      } : current)
+      setRoomArchive(null)
+      closeSelection()
+    } catch (cause) {
+      setError(errorMessage(cause))
+      await refreshGallery().catch(() => undefined)
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
   async function deleteRoom() {
     if (!room || !window.confirm('Видалити кімнату та всі її файли назавжди?')) return
     try {
@@ -1277,6 +1347,8 @@ function RoomPage() {
     video: gallery.filter((item) => item.media_type === 'video').length,
     mine: gallery.filter((item) => item.uploaded_by.id === session?.identity.id).length,
   }
+  const selectedItems = gallery.filter((item) => selectedMediaIDs.has(item.id))
+  const selectedDeletableCount = selectedItems.filter((item) => item.permissions.can_delete).length
   const shareURL = `${window.location.origin}/r/${slug}`
   const telegramInviteURL = telegramRoomLink(slug)
   const previewInviteURL = roomInviteLink(slug)
@@ -1325,18 +1397,21 @@ function RoomPage() {
       <div className="storage-line"><span style={{ width: `${usedPercent}%` }} /></div>
 
       {gallery.length > 0 && (
-        <nav className="gallery-filters" aria-label="Фільтр галереї">
-          {([
-            ['all', 'Усі'],
-            ['image', 'Фото'],
-            ['video', 'Відео'],
-            ['mine', 'Мої'],
-          ] as Array<[GalleryFilter, string]>).map(([value, label]) => (
-            <button key={value} className={galleryFilter === value ? 'is-active' : ''} aria-pressed={galleryFilter === value} onClick={() => setGalleryFilter(value)}>
-              <span>{label}</span><small>{filterCounts[value]}</small>
-            </button>
-          ))}
-        </nav>
+        <div className="gallery-controls">
+          <nav className="gallery-filters" aria-label="Фільтр галереї">
+            {([
+              ['all', 'Усі'],
+              ['image', 'Фото'],
+              ['video', 'Відео'],
+              ['mine', 'Мої'],
+            ] as Array<[GalleryFilter, string]>).map(([value, label]) => (
+              <button key={value} className={galleryFilter === value ? 'is-active' : ''} aria-pressed={galleryFilter === value} onClick={() => setGalleryFilter(value)}>
+                <span>{label}</span><small>{filterCounts[value]}</small>
+              </button>
+            ))}
+          </nav>
+          <button className={`select-media-button ${selectionMode ? 'is-active' : ''}`} onClick={() => selectionMode ? closeSelection() : setSelectionMode(true)}>{selectionMode ? 'Готово' : 'Вибрати'}</button>
+        </div>
       )}
 
       {roomArchive && <section className={`archive-status archive-status--${roomArchive.status}`} aria-live="polite">
@@ -1351,7 +1426,7 @@ function RoomPage() {
               <section className="gallery-group" key={group.key} aria-labelledby={`gallery-day-${group.key}`}>
                 <header><h3 id={`gallery-day-${group.key}`}>{group.label}</h3><span>{group.items.length}</span></header>
                 <div className="gallery-grid">
-                  {group.items.map((item) => <GalleryCard key={item.id} item={item} onDelete={deleteItem} onOpen={openMedia} onError={setError} />)}
+                  {group.items.map((item) => <GalleryCard key={item.id} item={item} selectionMode={selectionMode} selected={selectedMediaIDs.has(item.id)} onToggle={toggleMediaSelection} onDelete={deleteItem} onOpen={openMedia} onError={setError} />)}
                 </div>
               </section>
             ))}
@@ -1369,8 +1444,19 @@ function RoomPage() {
 
       <UploadQueue uploads={uploads} onCancel={cancelUpload} onPause={pauseUpload} onRetry={retryUpload} />
 
+      {selectionMode && selectedItems.length > 0 && (
+        <aside className="selection-bar" aria-live="polite">
+          <div><strong>{selectedItems.length} вибрано</strong><span>{bytes(selectedItems.reduce((sum, item) => sum + item.size_bytes, 0))}</span></div>
+          <div>
+            <button onClick={() => void saveSelected(selectedItems)} disabled={batchBusy}><ArrowDownToLine size={18} /><span>Зберегти</span></button>
+            {selectedDeletableCount > 0 && <button className="selection-bar__danger" onClick={() => void deleteSelected(selectedItems)} disabled={batchBusy}><Trash2 size={18} /><span>Видалити{selectedDeletableCount < selectedItems.length ? ` ${selectedDeletableCount}` : ''}</span></button>}
+            <button className="selection-bar__close" onClick={closeSelection} disabled={batchBusy} aria-label="Скасувати вибір"><X size={19} /></button>
+          </div>
+        </aside>
+      )}
+
       {shareDialog && <ShareDialog room={room} webURL={shareURL} telegramURL={telegramInviteURL} previewURL={previewInviteURL} onClose={() => setShareDialog(false)} onCopied={() => void copyLink()} />}
-      {mobileSaveOpen && <MobileSaveDialog slug={slug} roomName={room.name} onClose={() => setMobileSaveOpen(false)} onError={setError} />}
+      {mobileSaveOpen && <MobileSaveDialog slug={slug} roomName={room.name} initialItems={mobileSaveItems} onClose={() => { setMobileSaveOpen(false); setMobileSaveItems(undefined) }} onError={setError} />}
 
       {membersOpen && (
         <div className="dialog-backdrop" role="presentation" onMouseDown={() => setMembersOpen(false)}>

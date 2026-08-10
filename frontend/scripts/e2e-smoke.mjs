@@ -54,7 +54,11 @@ if (roomMembers.members.length !== 2) throw new Error(`Expected 2 room members, 
 const artifacts = resolve('tmp', 'e2e')
 await mkdir(artifacts, { recursive: true })
 
-const browser = await chromium.launch({ executablePath, headless: true })
+const browser = await chromium.launch({
+  executablePath,
+  headless: true,
+  args: process.env.CHROME_HOST_RESOLVER_RULES ? [`--host-resolver-rules=${process.env.CHROME_HOST_RESOLVER_RULES}`] : [],
+})
 const context = await browser.newContext({ viewport: { width: 375, height: 812 }, locale: 'uk-UA' })
 await context.addInitScript((storedSession) => {
   localStorage.setItem('photodrop.session.v1', JSON.stringify(storedSession))
@@ -113,6 +117,11 @@ try {
     const queueState = await page.locator('.upload-queue').innerText().catch(() => 'upload queue missing')
     throw new Error(`Recovered upload did not finish: ${queueState}; browser errors: ${pageErrors.join('; ')}; requests: ${requestFailures.slice(-8).join('; ')}`, { cause })
   })
+  await page.getByRole('button', { name: 'Вибрати' }).click()
+  await page.locator('article.media-card .media-preview').first().click()
+  const selectionBar = page.locator('.selection-bar')
+  await selectionBar.getByText('1 вибрано').waitFor()
+  await selectionBar.getByRole('button', { name: 'Скасувати вибір' }).click()
   await page.getByRole('button', { name: 'Завантажити всю галерею' }).click()
   await page.getByText('Архів готовий').waitFor({ timeout: 30_000 })
   await page.screenshot({ path: resolve(artifacts, 'archive-ready-375.png'), fullPage: true })

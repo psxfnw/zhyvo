@@ -40,6 +40,10 @@ type transferOwnershipRequest struct {
 	IdentityID uuid.UUID `json:"identity_id"`
 }
 
+type updateNotificationsRequest struct {
+	TelegramEnabled bool `json:"telegram_enabled"`
+}
+
 func (handler roomHandler) create(response http.ResponseWriter, request *http.Request) {
 	principal, ok := principalFromContext(request.Context())
 	if !ok {
@@ -235,6 +239,39 @@ func (handler roomHandler) update(response http.ResponseWriter, request *http.Re
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"room": updated})
+}
+
+func (handler roomHandler) notifications(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	result, err := handler.service.Notifications(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"))
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler roomHandler) updateNotifications(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	var input updateNotificationsRequest
+	if err := decodeJSON(response, request, &input); err != nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_JSON", "Request body is invalid")
+		return
+	}
+	result, err := handler.service.UpdateNotifications(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), input.TelegramEnabled)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (handler roomHandler) delete(response http.ResponseWriter, request *http.Request) {

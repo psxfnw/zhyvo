@@ -132,3 +132,8 @@ export interface RoomArchive {
   updated_at: string
   completed_at?: string
 }
+
+export interface RoomNotificationSettings {
+  telegram_available: boolean
+  telegram_enabled: boolean
+}

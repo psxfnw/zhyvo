@@ -8,15 +8,16 @@ import (
 )
 
 type Config struct {
-	HTTPAddr          string
-	DatabaseURL       string
-	ShutdownTimeout   time.Duration
-	CleanupInterval   time.Duration
-	ThumbnailInterval time.Duration
-	ArchiveInterval   time.Duration
-	S3                S3Config
-	Auth              AuthConfig
-	Telegram          TelegramConfig
+	HTTPAddr             string
+	DatabaseURL          string
+	ShutdownTimeout      time.Duration
+	CleanupInterval      time.Duration
+	ThumbnailInterval    time.Duration
+	ArchiveInterval      time.Duration
+	NotificationInterval time.Duration
+	S3                   S3Config
+	Auth                 AuthConfig
+	Telegram             TelegramConfig
 }
 
 type TelegramConfig struct {
@@ -64,6 +65,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	notificationInterval, err := duration("NOTIFICATION_INTERVAL", 2*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 
 	useSSL, err := boolean("S3_USE_SSL", false)
 	if err != nil {
@@ -92,12 +97,13 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		HTTPAddr:          value("HTTP_ADDR", ":8080"),
-		DatabaseURL:       os.Getenv("DATABASE_URL"),
-		ShutdownTimeout:   shutdownTimeout,
-		CleanupInterval:   cleanupInterval,
-		ThumbnailInterval: thumbnailInterval,
-		ArchiveInterval:   archiveInterval,
+		HTTPAddr:             value("HTTP_ADDR", ":8080"),
+		DatabaseURL:          os.Getenv("DATABASE_URL"),
+		ShutdownTimeout:      shutdownTimeout,
+		CleanupInterval:      cleanupInterval,
+		ThumbnailInterval:    thumbnailInterval,
+		ArchiveInterval:      archiveInterval,
+		NotificationInterval: notificationInterval,
 		S3: S3Config{
 			Endpoint:       value("S3_ENDPOINT", "localhost:9000"),
 			PublicEndpoint: value("S3_PUBLIC_ENDPOINT", value("S3_ENDPOINT", "localhost:9000")),
@@ -141,6 +147,9 @@ func Load() (Config, error) {
 	}
 	if cfg.ArchiveInterval <= 0 {
 		return Config{}, fmt.Errorf("ARCHIVE_INTERVAL must be positive")
+	}
+	if cfg.NotificationInterval <= 0 {
+		return Config{}, fmt.Errorf("NOTIFICATION_INTERVAL must be positive")
 	}
 	if len(cfg.Auth.AccessSecret) < 32 {
 		return Config{}, fmt.Errorf("AUTH_ACCESS_SECRET must contain at least 32 characters")

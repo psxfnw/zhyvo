@@ -32,3 +32,9 @@ Security requirements:
 - Provide Zhyvo session management with current-device logout and revoke-all-devices actions.
 
 This flow avoids creating a persistent `Telegram Widgets` browser session, makes the trust boundary visible to the user, and fits the product better because Telegram already acts as Zhyvo's verified companion app.
+
+## Opt-in Telegram room notifications
+
+Status: implemented in preview.
+
+Room owners with a linked Telegram identity can opt in per room. Member joins are delivered immediately; file uploads are grouped into a short per-uploader digest. Delivery uses a PostgreSQL transactional outbox processed by the existing worker with bounded retries, so notification failures never roll back joins or media uploads.

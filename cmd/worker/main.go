@@ -12,6 +12,7 @@ import (
 	"photodrop/internal/database"
 	"photodrop/internal/objectstore"
 	"photodrop/internal/roomarchive"
+	"photodrop/internal/telegramnotify"
 	"photodrop/internal/thumbnail"
 )
 
@@ -49,11 +50,13 @@ func run(logger *slog.Logger) error {
 	cleanupService := cleanup.New(db, store, cfg.CleanupInterval, logger)
 	thumbnailService := thumbnail.New(db, store, cfg.ThumbnailInterval, logger)
 	archiveWorker := roomarchive.NewWorker(db, store, cfg.ArchiveInterval, logger)
-	errCh := make(chan error, 3)
+	notificationWorker := telegramnotify.New(db, cfg.Telegram.BotToken, cfg.Telegram.BotUsername, cfg.NotificationInterval, logger)
+	errCh := make(chan error, 4)
 	go func() { errCh <- cleanupService.Run(ctx) }()
 	go func() { errCh <- thumbnailService.Run(ctx) }()
 	go func() { errCh <- archiveWorker.Run(ctx) }()
-	logger.Info("worker started", "cleanup_interval", cfg.CleanupInterval, "thumbnail_interval", cfg.ThumbnailInterval, "archive_interval", cfg.ArchiveInterval)
+	go func() { errCh <- notificationWorker.Run(ctx) }()
+	logger.Info("worker started", "cleanup_interval", cfg.CleanupInterval, "thumbnail_interval", cfg.ThumbnailInterval, "archive_interval", cfg.ArchiveInterval, "notification_interval", cfg.NotificationInterval)
 	select {
 	case <-ctx.Done():
 		return nil

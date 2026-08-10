@@ -41,7 +41,7 @@ import { uploadFile } from './lib/upload'
 import { loadUploadQueue, saveUploadQueue } from './lib/uploadQueue'
 import { mediaCapturedAt } from './lib/metadata'
 import { completeTelegramLogin, startTelegramLogin } from './lib/telegramLogin'
-import type { AccessMode, BlockedRoomMember, GalleryItem, Room, RoomActivityEvent, RoomArchive, RoomMember, RoomPreview, Session, UploadProgress } from './types'
+import type { AccessMode, BlockedRoomMember, GalleryItem, Room, RoomActivityEvent, RoomArchive, RoomMember, RoomNotificationSettings, RoomPreview, Session, UploadProgress } from './types'
 
 function uuid() {
   return crypto.randomUUID()
@@ -864,6 +864,8 @@ function RoomPage() {
   const [settingsLifetime, setSettingsLifetime] = useState(1)
   const [settingsBusy, setSettingsBusy] = useState(false)
   const [settingsError, setSettingsError] = useState('')
+  const [notificationSettings, setNotificationSettings] = useState<RoomNotificationSettings | null>(null)
+  const [notificationBusy, setNotificationBusy] = useState(false)
   const [shareDialog, setShareDialog] = useState(false)
   const [membersOpen, setMembersOpen] = useState(false)
   const [members, setMembers] = useState<RoomMember[]>([])
@@ -985,6 +987,15 @@ function RoomPage() {
     document.addEventListener('keydown', onKeyDown)
     return () => { document.removeEventListener('keydown', onKeyDown); previousFocus?.focus() }
   }, [room, settings])
+
+  useEffect(() => {
+    if (!settings || room?.role !== 'owner') return
+    let active = true
+    rooms.notifications(slug).then((result) => { if (active) setNotificationSettings(result) }).catch((cause) => {
+      if (active) setSettingsError(errorMessage(cause))
+    })
+    return () => { active = false }
+  }, [room?.role, settings, slug])
 
   useEffect(() => {
     if (!membersOpen) return
@@ -1200,6 +1211,20 @@ function RoomPage() {
       setSettingsError(errorMessage(cause))
     } finally {
       setSettingsBusy(false)
+    }
+  }
+
+  async function toggleNotifications() {
+    if (!notificationSettings || notificationBusy) return
+    setNotificationBusy(true)
+    setSettingsError('')
+    try {
+      const result = await rooms.updateNotifications(slug, !notificationSettings.telegram_enabled)
+      setNotificationSettings(result)
+    } catch (cause) {
+      setSettingsError(errorMessage(cause))
+    } finally {
+      setNotificationBusy(false)
     }
   }
 
@@ -1574,6 +1599,7 @@ function RoomPage() {
               <button className="primary-button" onClick={() => void saveRoomSettings()} disabled={settingsBusy}>{settingsBusy ? 'Зберігаємо…' : 'Зберегти зміни'}</button>
             </div>
             <div className="setting-row"><div><strong>Учасники кімнати</strong><span>Перегляньте всіх, хто приєднався за посиланням або QR-кодом.</span></div><button className="secondary-button primary-button--fit" onClick={() => void openMembers()}><Users size={17} /> Переглянути</button></div>
+            <div className="setting-row"><div><strong>Сповіщення в Telegram</strong><span>{notificationSettings?.telegram_available ? 'Нові учасники та завантаження. Файли об’єднуємо в короткі повідомлення без спаму.' : 'Підключіть Telegram, щоб бот міг повідомляти про активність у кімнаті.'}</span></div>{notificationSettings?.telegram_available ? <button className={`switch ${notificationSettings.telegram_enabled ? 'on' : ''}`} role="switch" aria-checked={notificationSettings.telegram_enabled} disabled={notificationBusy} onClick={() => void toggleNotifications()}><span /></button> : <button className="secondary-button primary-button--fit" onClick={() => navigate(`/auth/telegram/link?returnTo=${encodeURIComponent(`/r/${slug}`)}`)}><Send size={17} /> Підключити</button>}</div>
             <div className="setting-row"><div><strong>Приймати нових учасників</strong><span>Вимкніть, щоб нові люди не могли приєднатися за старим посиланням.</span></div><button className={`switch ${room.accepting_members ? 'on' : ''}`} role="switch" aria-checked={room.accepting_members} onClick={() => void toggleMembers()}><span /></button></div>
             <div className="setting-row"><div><strong>Приймати нові файли</strong><span>Учасники бачитимуть галерею, але не зможуть завантажувати медіа.</span></div><button className={`switch ${room.accepting_uploads ? 'on' : ''}`} role="switch" aria-checked={room.accepting_uploads} onClick={() => void toggleUploads()}><span /></button></div>
             <div className="setting-row setting-row--danger"><div><strong>Видалити кімнату</strong><span>Усі оригінали та дані буде видалено без можливості відновлення.</span></div><button className="danger-button" onClick={deleteRoom}><Trash2 size={17} /> Видалити</button></div>

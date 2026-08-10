@@ -96,6 +96,8 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		router.Post("/api/v1/rooms/{slug}/ownership", roomAPI.transferOwnership)
 		router.Get("/api/v1/rooms/{slug}/activity", roomAPI.activity)
 		router.Patch("/api/v1/rooms/{slug}", roomAPI.update)
+		router.Get("/api/v1/rooms/{slug}/notifications", roomAPI.notifications)
+		router.Patch("/api/v1/rooms/{slug}/notifications", roomAPI.updateNotifications)
 		router.Delete("/api/v1/rooms/{slug}", roomAPI.delete)
 		router.With(uploadLimiter.middleware(identityKey)).Post("/api/v1/rooms/{slug}/uploads", uploadAPI.initiate)
 		router.With(uploadLimiter.middleware(identityKey)).Post("/api/v1/uploads/{uploadID}/parts", uploadAPI.parts)

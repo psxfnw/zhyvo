@@ -99,6 +99,11 @@ type BlockedMember struct {
 	BlockedAt   time.Time `json:"blocked_at"`
 }
 
+type NotificationSettings struct {
+	TelegramAvailable bool `json:"telegram_available"`
+	TelegramEnabled   bool `json:"telegram_enabled"`
+}
+
 type MembersResult struct {
 	Members []Member        `json:"members"`
 	Blocked []BlockedMember `json:"blocked_members"`
@@ -390,6 +395,19 @@ func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret s
 		if err := recordEvent(ctx, tx, roomID, "member_joined", identityID, nil); err != nil {
 			return Room{}, err
 		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO telegram_notification_outbox (room_id, telegram_user_id, event_type, payload)
+			SELECT room.id, owner.telegram_user_id, 'member_joined', jsonb_build_object(
+				'room_name', room.name, 'room_slug', room.slug, 'actor_name', actor.display_name
+			)
+			FROM rooms room
+			JOIN identities owner ON owner.id = room.owner_identity_id
+			JOIN identities actor ON actor.id = $2
+			JOIN room_notification_preferences preference ON preference.room_id = room.id AND preference.identity_id = owner.id
+			WHERE room.id = $1 AND preference.telegram_enabled AND owner.telegram_user_id IS NOT NULL
+		`, roomID, identityID); err != nil {
+			return Room{}, fmt.Errorf("enqueue member notification: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Room{}, fmt.Errorf("commit room join: %w", err)
@@ -428,6 +446,61 @@ func (s *Service) Get(ctx context.Context, identityID uuid.UUID, slug string) (R
 		return Room{}, ErrExpired
 	}
 	return result, nil
+}
+
+func (s *Service) Notifications(ctx context.Context, identityID uuid.UUID, slug string) (NotificationSettings, error) {
+	var result NotificationSettings
+	var role string
+	err := s.db.QueryRow(ctx, `
+		SELECT rm.role, identity.telegram_user_id IS NOT NULL,
+		       COALESCE(preference.telegram_enabled, false)
+		FROM rooms room
+		JOIN room_members rm ON rm.room_id = room.id AND rm.identity_id = $1
+		JOIN identities identity ON identity.id = $1
+		LEFT JOIN room_notification_preferences preference ON preference.room_id = room.id AND preference.identity_id = $1
+		WHERE room.slug = $2 AND room.status = 'active' AND room.expires_at > $3
+	`, identityID, normalizeSlug(slug), s.now()).Scan(&role, &result.TelegramAvailable, &result.TelegramEnabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return NotificationSettings{}, ErrNotFound
+	}
+	if err != nil {
+		return NotificationSettings{}, fmt.Errorf("get notification settings: %w", err)
+	}
+	if role != "owner" {
+		return NotificationSettings{}, ErrOwnerRequired
+	}
+	return result, nil
+}
+
+func (s *Service) UpdateNotifications(ctx context.Context, identityID uuid.UUID, slug string, enabled bool) (NotificationSettings, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return NotificationSettings{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	roomID, err := s.lockOwnedRoom(ctx, tx, identityID, slug)
+	if err != nil {
+		return NotificationSettings{}, err
+	}
+	var telegramAvailable bool
+	if err := tx.QueryRow(ctx, `SELECT telegram_user_id IS NOT NULL FROM identities WHERE id = $1`, identityID).Scan(&telegramAvailable); err != nil {
+		return NotificationSettings{}, err
+	}
+	if enabled && !telegramAvailable {
+		return NotificationSettings{}, fmt.Errorf("%w: link a Telegram account before enabling notifications", ErrInvalidInput)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO room_notification_preferences (room_id, identity_id, telegram_enabled)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (room_id, identity_id) DO UPDATE
+		SET telegram_enabled = EXCLUDED.telegram_enabled, updated_at = now()
+	`, roomID, identityID, enabled); err != nil {
+		return NotificationSettings{}, fmt.Errorf("update notification settings: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return NotificationSettings{}, err
+	}
+	return NotificationSettings{TelegramAvailable: telegramAvailable, TelegramEnabled: enabled}, nil
 }
 
 func (s *Service) Update(ctx context.Context, identityID uuid.UUID, slug string, input UpdateInput) (Room, error) {

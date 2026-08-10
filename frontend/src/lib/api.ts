@@ -1,4 +1,4 @@
-import type { AccessMode, BlockedRoomMember, GalleryPage, Identity, Room, RoomActivityEvent, RoomArchive, RoomMember, RoomPreview, Session, UploadTicket } from '../types'
+import type { AccessMode, BlockedRoomMember, GalleryPage, Identity, Room, RoomActivityEvent, RoomArchive, RoomMember, RoomNotificationSettings, RoomPreview, Session, UploadTicket } from '../types'
 
 const SESSION_KEY = 'photodrop.session.v1'
 
@@ -178,6 +178,8 @@ export const rooms = {
   activity: (slug: string) => api<{ events: RoomActivityEvent[] }>(`/rooms/${slug}/activity`),
   update: (slug: string, input: Partial<{ name: string; accepting_uploads: boolean; accepting_members: boolean; access: { mode: AccessMode; secret: string }; lifetime_days: number }>) =>
     api<{ room: Room }>(`/rooms/${slug}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  notifications: (slug: string) => api<RoomNotificationSettings>(`/rooms/${slug}/notifications`),
+  updateNotifications: (slug: string, telegramEnabled: boolean) => api<RoomNotificationSettings>(`/rooms/${slug}/notifications`, { method: 'PATCH', body: JSON.stringify({ telegram_enabled: telegramEnabled }) }),
   remove: (slug: string) => api<void>(`/rooms/${slug}`, { method: 'DELETE' }),
 }
 

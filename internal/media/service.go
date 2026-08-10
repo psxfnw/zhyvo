@@ -352,6 +352,25 @@ func (s *Service) Complete(ctx context.Context, identityID, uploadID uuid.UUID, 
 	`, upload.sizeBytes, upload.MediaID); err != nil {
 		return MediaResult{}, fmt.Errorf("commit room capacity: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO telegram_notification_outbox (room_id, telegram_user_id, event_type, payload, dedupe_key, available_at)
+		SELECT room.id, owner.telegram_user_id, 'media_uploaded', jsonb_build_object(
+			'room_name', room.name, 'room_slug', room.slug, 'actor_name', uploader.display_name,
+			'filename', media.original_filename, 'count', 1
+		), 'media:' || room.id || ':' || uploader.id || ':' || floor(extract(epoch from now()) / 300)::bigint, now() + interval '15 seconds'
+		FROM media
+		JOIN rooms room ON room.id = media.room_id
+		JOIN identities uploader ON uploader.id = media.uploader_identity_id
+		JOIN identities owner ON owner.id = room.owner_identity_id
+		JOIN room_notification_preferences preference ON preference.room_id = room.id AND preference.identity_id = owner.id
+		WHERE media.id = $1 AND preference.telegram_enabled AND owner.telegram_user_id IS NOT NULL AND owner.id <> uploader.id
+		ON CONFLICT (dedupe_key) DO UPDATE
+		SET payload = jsonb_set(telegram_notification_outbox.payload, '{count}', to_jsonb(COALESCE((telegram_notification_outbox.payload->>'count')::int, 1) + 1)),
+		    available_at = now() + interval '15 seconds'
+		WHERE telegram_notification_outbox.sent_at IS NULL AND telegram_notification_outbox.failed_at IS NULL
+	`, upload.MediaID); err != nil {
+		return MediaResult{}, fmt.Errorf("enqueue media notification: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return MediaResult{}, fmt.Errorf("commit upload completion: %w", err)
 	}

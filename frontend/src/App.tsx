@@ -16,6 +16,8 @@ import {
   LockKeyhole,
   LogIn,
   Menu,
+  Pause,
+  Play,
   RefreshCw,
   RotateCcw,
   Send,
@@ -481,22 +483,29 @@ function JoinRoom({ preview, onJoined }: { preview: RoomPreview; onJoined: (room
   )
 }
 
-function UploadQueue({ uploads, onCancel, onRetry }: {
+function UploadQueue({ uploads, onCancel, onPause, onRetry }: {
   uploads: UploadProgress[]
   onCancel: (id: string) => void
+  onPause: (id: string) => void
   onRetry: (id: string) => void
 }) {
   if (!uploads.length) return null
+  const completed = uploads.filter((item) => item.state === 'done').length
+  const totalBytes = uploads.reduce((sum, item) => sum + item.size_bytes, 0)
+  const uploadedBytes = uploads.reduce((sum, item) => sum + item.size_bytes * item.progress / 100, 0)
+  const totalProgress = totalBytes ? Math.round(uploadedBytes / totalBytes * 100) : 0
   return (
     <aside className="upload-queue" aria-live="polite">
-      <div className="upload-queue__title"><Upload size={17} /> Завантаження</div>
+      <div className="upload-queue__title"><div><Upload size={17} /><strong>Завантаження</strong></div><span>{completed} із {uploads.length} · {totalProgress}%</span></div>
+      <div className="upload-queue__total-progress" aria-label={`Загальний прогрес ${totalProgress}%`}><span style={{ width: `${totalProgress}%` }} /></div>
       {uploads.map((item) => (
         <div className="upload-row" key={item.id}>
           <div>
             <div><strong>{item.filename}</strong><span>{item.state === 'done' ? 'Готово' : item.state === 'error' ? item.message : item.message ?? `${item.progress}%`}</span></div>
             <div className="upload-actions">
-              {item.state === 'uploading' && <button type="button" onClick={() => onCancel(item.id)}>Скасувати</button>}
-              {(item.state === 'error' || item.state === 'waiting_file') && item.canRetry && <button type="button" onClick={() => onRetry(item.id)}><RefreshCw size={15} /> {item.state === 'waiting_file' ? 'Вибрати файл' : 'Повторити'}</button>}
+              {item.state === 'uploading' && <button type="button" onClick={() => onPause(item.id)}><Pause size={15} /> Пауза</button>}
+              {(item.state === 'paused' || item.state === 'error' || item.state === 'waiting_file') && item.canRetry && <button type="button" onClick={() => onRetry(item.id)}>{item.state === 'paused' ? <Play size={15} /> : <RefreshCw size={15} />} {item.state === 'waiting_file' ? 'Вибрати файл' : item.state === 'paused' ? 'Продовжити' : 'Повторити'}</button>}
+              {item.state !== 'done' && <button type="button" onClick={() => onCancel(item.id)}>Скасувати</button>}
             </div>
           </div>
           <div className={`progress ${item.state}`}><span style={{ width: `${item.progress}%` }} /></div>
@@ -791,6 +800,7 @@ function RoomPage() {
   const resumeTargetRef = useRef<string | null>(null)
   const uploadFilesRef = useRef(new Map<string, File>())
   const uploadControllersRef = useRef(new Map<string, AbortController>())
+  const pausedUploadsRef = useRef(new Set<string>())
   const uploadsRef = useRef<UploadProgress[]>([])
   const uploadsHydratedKeyRef = useRef('')
   const galleryRefreshRef = useRef(false)
@@ -952,6 +962,7 @@ function RoomPage() {
         onProgress: (progress) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, progress, message: undefined } : item)),
         onStatus: (message) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, message } : item)),
         onCheckpoint: ({ uploadID, completedParts }) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, upload_id: uploadID, completed_parts: completedParts } : item)),
+        shouldPreserveOnAbort: () => pausedUploadsRef.current.has(queueID),
       })
       setUploads((current) => current.map((item) => item.id === queueID ? { ...item, state: 'done', progress: 100, message: undefined } : item))
       setRoomArchive(null)
@@ -959,12 +970,13 @@ function RoomPage() {
       uploadControllersRef.current.delete(queueID)
     } catch (cause) {
       const cancelled = controller.signal.aborted
+      const paused = cancelled && pausedUploadsRef.current.has(queueID)
       const sessionExpired = cause instanceof ApiError && ['UPLOAD_EXPIRED', 'UPLOAD_NOT_FOUND'].includes(cause.code)
       setUploads((current) => current.map((item) => item.id === queueID ? {
         ...item,
-        state: 'error',
-        message: cancelled ? 'Скасовано' : sessionExpired ? 'Сесія завершилася — почнемо файл заново' : errorMessage(cause),
-        canRetry: !cancelled,
+        state: paused ? 'paused' : 'error',
+        message: paused ? 'Призупинено' : cancelled ? 'Скасовано' : sessionExpired ? 'Сесія завершилася — почнемо файл заново' : errorMessage(cause),
+        canRetry: paused || !cancelled,
         ...(sessionExpired ? { idempotency_key: uuid(), upload_id: undefined, completed_parts: [] } : {}),
       } : item))
       uploadControllersRef.current.delete(queueID)
@@ -976,7 +988,21 @@ function RoomPage() {
 
   async function acceptFiles(files: FileList | null) {
     if (!files?.length || !room) return
-    const accepted = Array.from(files)
+    const incoming = Array.from(files)
+    const existingFingerprints = new Set(uploadsRef.current.map((item) => `${item.filename}:${item.size_bytes}`))
+    const seen = new Set(existingFingerprints)
+    const rejected: UploadProgress[] = []
+    const accepted = incoming.filter((file) => {
+      const fingerprint = `${file.name}:${file.size}`
+      const message = file.size > 2 * 1024 * 1024 * 1024
+        ? 'Файл перевищує ліміт 2 ГБ'
+        : !file.type.startsWith('image/') && !file.type.startsWith('video/')
+          ? 'Підтримуються лише фото та відео'
+          : seen.has(fingerprint) ? 'Цей файл уже додано до черги' : ''
+      if (!message) { seen.add(fingerprint); return true }
+      rejected.push({ id: uuid(), filename: file.name, size_bytes: file.size, mime_type: file.type, last_modified: file.lastModified, idempotency_key: uuid(), created_at: new Date().toISOString(), progress: 0, state: 'error', message, canRetry: false })
+      return false
+    })
     const queue: UploadProgress[] = accepted.map((file) => ({
       id: uuid(),
       filename: file.name,
@@ -992,7 +1018,8 @@ function RoomPage() {
       uploadFilesRef.current.set(item.id, accepted[index])
       uploadControllersRef.current.set(item.id, new AbortController())
     })
-    setUploads((current) => [...current.filter((item) => item.state !== 'done'), ...queue])
+    setUploads((current) => [...current.filter((item) => item.state !== 'done'), ...queue, ...rejected])
+    if (!queue.length) { if (inputRef.current) inputRef.current.value = ''; return }
     let nextIndex = 0
     const worker = async () => {
       while (nextIndex < queue.length) {
@@ -1009,9 +1036,18 @@ function RoomPage() {
   }
 
   function cancelUpload(id: string) {
+    pausedUploadsRef.current.delete(id)
+    const item = uploadsRef.current.find((candidate) => candidate.id === id)
     uploadControllersRef.current.get(id)?.abort()
+    if (item?.state === 'paused' && item.upload_id) void media.abort(item.upload_id).catch(() => undefined)
+    uploadFilesRef.current.delete(id)
     setUploads((current) => current.map((item) => item.id === id ? { ...item, state: 'error', message: 'Скасовано', canRetry: false } : item))
     window.setTimeout(() => setUploads((current) => current.filter((item) => item.id !== id)), 1800)
+  }
+
+  function pauseUpload(id: string) {
+    pausedUploadsRef.current.add(id)
+    uploadControllersRef.current.get(id)?.abort()
   }
 
   function retryUpload(id: string) {
@@ -1021,8 +1057,10 @@ function RoomPage() {
       resumeInputRef.current?.click()
       return
     }
+    const wasPaused = uploadsRef.current.find((item) => item.id === id)?.state === 'paused'
+    pausedUploadsRef.current.delete(id)
     uploadControllersRef.current.set(id, new AbortController())
-    setUploads((current) => current.map((item) => item.id === id ? { ...item, progress: 0, state: 'queued', message: undefined, canRetry: false } : item))
+    setUploads((current) => current.map((item) => item.id === id ? { ...item, progress: wasPaused ? item.progress : 0, state: 'queued', message: undefined, canRetry: false } : item))
     void processUpload(id, file).then(async () => {
       await refreshGallery().catch(() => undefined)
       const refreshedRoom = await rooms.get(slug).catch(() => null)
@@ -1255,7 +1293,7 @@ function RoomPage() {
         </section>
       )}
 
-      <UploadQueue uploads={uploads} onCancel={cancelUpload} onRetry={retryUpload} />
+      <UploadQueue uploads={uploads} onCancel={cancelUpload} onPause={pauseUpload} onRetry={retryUpload} />
 
       {shareDialog && <ShareDialog room={room} webURL={shareURL} telegramURL={telegramInviteURL} previewURL={previewInviteURL} onClose={() => setShareDialog(false)} onCopied={() => void copyLink()} />}
       {mobileSaveOpen && <MobileSaveDialog slug={slug} roomName={room.name} onClose={() => setMobileSaveOpen(false)} onError={setError} />}

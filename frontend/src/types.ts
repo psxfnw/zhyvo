@@ -109,7 +109,7 @@ export interface UploadProgress {
   completed_parts?: Array<{ part_number: number; etag: string }>
   created_at: string
   progress: number
-  state: 'queued' | 'uploading' | 'waiting_file' | 'done' | 'error'
+  state: 'queued' | 'uploading' | 'paused' | 'waiting_file' | 'done' | 'error'
   message?: string
   canRetry?: boolean
 }

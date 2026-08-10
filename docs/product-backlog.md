@@ -1,5 +1,13 @@
 # Product backlog
 
+## Reliable upload queue
+
+Status: implemented in the preview.
+
+The mobile-first queue uploads two files concurrently, retries transient API and object-storage failures with exponential backoff, waits for the network to return, persists multipart checkpoints, and supports pause, resume, cancel, and cross-reload file recovery. It shows byte-weighted overall progress and rejects unsupported media, files over 2 GiB, and duplicate name/size pairs already present in the active queue.
+
+Future duplicate detection across completed gallery items should use a client-computed checksum rather than filename metadata.
+
 ## Download all media
 
 Status: implemented in two device-specific flows.

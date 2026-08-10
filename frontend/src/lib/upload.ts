@@ -18,6 +18,7 @@ interface UploadOptions {
   onProgress: (value: number) => void
   onStatus?: (message: string) => void
   onCheckpoint?: (checkpoint: UploadCheckpoint) => void
+  shouldPreserveOnAbort?: () => boolean
 }
 
 class StorageResponseError extends Error {
@@ -133,7 +134,7 @@ export async function uploadFile(slug: string, file: File, options: UploadOption
     else await uploadMultipart(upload, file, options)
     options.onProgress(100)
   } catch (error) {
-    if (isAbort(error, options.signal)) await media.abort(upload.id).catch(() => undefined)
+    if (isAbort(error, options.signal) && !options.shouldPreserveOnAbort?.()) await media.abort(upload.id).catch(() => undefined)
     throw error
   }
 }

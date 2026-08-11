@@ -587,7 +587,10 @@ a:focus-visible {
 }
 .upload-queue__title { padding: 14px 17px 10px; display: flex; align-items: center; justify-content: space-between; gap: 14px; font-size: 14px; font-weight: 720; }
 .upload-queue__title > div { display: flex; align-items: center; gap: 8px; }
-.upload-queue__title > span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.upload-queue__summary { margin: -8px -8px -8px 0; }
+.upload-queue__summary > span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.upload-queue__summary button { width: 44px; height: 44px; padding: 0; display: grid; flex: 0 0 auto; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+.upload-queue__summary button:hover { background: rgb(118 118 128 / 10%); color: var(--ink); }
 .upload-queue__title svg { color: var(--blue); }
 .upload-queue__total-progress { height: 4px; margin: 0 17px 5px; overflow: hidden; background: rgb(118 118 128 / 12%); }
 .upload-queue__total-progress span { height: 100%; display: block; background: var(--blue); transition: width 220ms ease; }

@@ -525,11 +525,12 @@ function JoinRoom({ preview, onJoined }: { preview: RoomPreview; onJoined: (room
   )
 }
 
-function UploadQueue({ uploads, onCancel, onPause, onRetry }: {
+function UploadQueue({ uploads, onCancel, onPause, onRetry, onClearCompleted }: {
   uploads: UploadProgress[]
   onCancel: (id: string) => void
   onPause: (id: string) => void
   onRetry: (id: string) => void
+  onClearCompleted: () => void
 }) {
   if (!uploads.length) return null
   const completed = uploads.filter((item) => item.state === 'done').length
@@ -538,7 +539,13 @@ function UploadQueue({ uploads, onCancel, onPause, onRetry }: {
   const totalProgress = totalBytes ? Math.round(uploadedBytes / totalBytes * 100) : 0
   return (
     <aside className="upload-queue" aria-live="polite">
-      <div className="upload-queue__title"><div><Upload size={17} /><strong>Завантаження</strong></div><span>{completed} із {uploads.length} · {totalProgress}%</span></div>
+      <div className="upload-queue__title">
+        <div><Upload size={17} /><strong>Завантаження</strong></div>
+        <div className="upload-queue__summary">
+          <span>{completed} із {uploads.length} · {totalProgress}%</span>
+          {completed > 0 && <button type="button" onClick={onClearCompleted} aria-label="Приховати завершені"><X size={17} /></button>}
+        </div>
+      </div>
       <div className="upload-queue__total-progress" aria-label={`Загальний прогрес ${totalProgress}%`}><span style={{ width: `${totalProgress}%` }} /></div>
       {uploads.map((item) => (
         <div className="upload-row" key={item.id}>
@@ -1538,7 +1545,13 @@ function RoomPage() {
         </section>
       )}
 
-      <UploadQueue uploads={uploads} onCancel={cancelUpload} onPause={pauseUpload} onRetry={retryUpload} />
+      <UploadQueue
+        uploads={uploads}
+        onCancel={cancelUpload}
+        onPause={pauseUpload}
+        onRetry={retryUpload}
+        onClearCompleted={() => setUploads((current) => current.filter((item) => item.state !== 'done'))}
+      />
 
       {selectionMode && selectedItems.length > 0 && (
         <aside className="selection-bar" aria-live="polite">

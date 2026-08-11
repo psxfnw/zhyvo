@@ -1,5 +1,23 @@
 # Product backlog
 
+## Capture-date gallery timeline
+
+Status: implemented in preview.
+
+The client extracts capture time from common EXIF metadata before upload. The gallery groups media by event date with a safe fallback to upload time, while `Фото`, `Відео`, and `Усі` filters keep large mixed galleries scannable.
+
+## Batch gallery actions
+
+Status: implemented in preview.
+
+Users can enter selection mode, select multiple gallery items, save them in the device-appropriate flow, and remove only the items they are authorized to delete. Destructive actions show the exact affected count.
+
+## Room lifecycle controls
+
+Status: implemented in preview.
+
+Owners can rename a room, extend its lifetime up to three days from creation, change access protection, pause uploads, close joining, inspect activity, remove or unblock members, and transfer ownership. Closing joining does not remove current members.
+
 ## Reliable upload queue
 
 Status: implemented in the preview.
@@ -44,3 +62,13 @@ Room owners with a linked Telegram identity can opt in per room. Member joins ar
 Status: implemented in preview.
 
 The thumbnail worker uses FFmpeg/FFprobe with explicit autorotation, bounded processing time, display-aware dimensions and video duration metadata. Video posters are sampled near 10% of the clip to avoid black opening frames. HEIC/HEIF files use a libheif fallback and remain downloadable in original quality while browsers receive a compatible JPEG preview. Command errors are sanitized before persistence so presigned storage URLs never enter diagnostic fields.
+
+## Next product candidates
+
+These are intentionally not part of the current MVP release gate:
+
+1. Client-computed content hashes for duplicate detection across finished uploads.
+2. Native Photo Library / Files integration after the Capacitor wrapper is introduced.
+3. Lightweight reactions or favorites for choosing the best event photos without turning rooms into a social feed.
+4. Owner-configurable room cover generated from an existing gallery photo.
+5. Storage and upload analytics before paid plans or larger limits are introduced.

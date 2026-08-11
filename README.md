@@ -65,6 +65,29 @@ docker compose down
 
 Дані PostgreSQL і MinIO зберігаються в Docker volumes між перезапусками.
 
+### Щоденний запуск локального preview
+
+Preview працює з вашого комп’ютера, тому він доступний лише коли комп’ютер увімкнений і Docker Desktop запущений. Окремий Tailscale-контейнер ізольований від встановленого у Windows робочого Tailscale та не змінює його налаштувань.
+
+Зазвичай після входу у Windows достатньо запустити Docker Desktop: контейнери з політикою `restart: unless-stopped` піднімуться автоматично. Якщо сайт недоступний, у корені проєкту виконайте:
+
+```powershell
+docker compose --profile preview up -d
+docker compose --profile preview ps
+```
+
+У колонці `STATUS` сервіси `api` та `frontend` мають стати `healthy`. Потім перевірте [локальний readiness](http://localhost:8080/health/ready) і preview `https://zhyvo-preview.tail5b4bc9.ts.net`. Повна перебудова потрібна лише після змін коду:
+
+```powershell
+docker compose --profile preview up -d --build
+```
+
+Для діагностики без зміни Tailscale у Windows:
+
+```powershell
+docker compose logs --tail 100 api worker frontend tailscale-preview
+```
+
 ## Frontend
 
 Мобільний клієнт розташований у `frontend/` і збирається як React/TypeScript PWA. Через Docker він доступний на `http://localhost:3000`, а Nginx проксіює REST-запити до API. Окремо встановлювати Node.js для звичайного локального запуску через Docker не потрібно.
@@ -79,12 +102,14 @@ npm run dev
 
 Vite відкриється на `http://localhost:5173` і сам проксіюватиме `/api` до backend.
 
-Браузерний smoke-test перевіряє мобільну кімнату, Telegram/QR-запрошення, upload із п'ятьма штучними обривами та відновленням після reload, фоновий ZIP і його реальне завантаження, viewer, керування учасниками, передачу власності, touch targets і адаптивність на 375/768/1024/1440 px. Для нього Docker-оточення має працювати, а Chrome/Chromium — бути встановленим:
+Браузерний smoke-test перевіряє мобільну кімнату, Telegram/QR-запрошення, upload із п'ятьма штучними обривами та відновленням після reload, фільтри й пакетний вибір, фоновий ZIP і його реальне завантаження, viewer, зміну назви та TTL, закриття входу, керування учасниками, передачу власності, touch targets і адаптивність на 375/768/1024/1440 px. Для нього Docker-оточення має працювати, а Chrome/Chromium — бути встановленим:
 
 ```powershell
 Set-Location frontend
 npm run test:e2e
 ```
+
+Повний перелік перевірок перед показом або релізом є у `docs/release-checklist.md`.
 
 Актуальні UI-токени та UX-правила зафіксовані в `design-system/photodrop/MASTER.md`.
 

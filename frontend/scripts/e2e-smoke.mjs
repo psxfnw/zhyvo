@@ -41,6 +41,10 @@ const guestAuth = await json('/auth/anonymous', {
   method: 'POST',
   body: JSON.stringify({ display_name: 'E2E Guest', client_type: 'web' }),
 })
+const lateGuestAuth = await json('/auth/anonymous', {
+  method: 'POST',
+  body: JSON.stringify({ display_name: 'E2E Late Guest', client_type: 'web' }),
+})
 let cleanupAuth = auth
 await json(`/rooms/${slug}/join`, {
   method: 'POST',
@@ -117,6 +121,12 @@ try {
     const queueState = await page.locator('.upload-queue').innerText().catch(() => 'upload queue missing')
     throw new Error(`Recovered upload did not finish: ${queueState}; browser errors: ${pageErrors.join('; ')}; requests: ${requestFailures.slice(-8).join('; ')}`, { cause })
   })
+  await page.getByRole('button', { name: 'Приховати завершені' }).click()
+  await page.locator('.gallery-filters button').filter({ hasText: 'Фото' }).click()
+  await page.locator('article.media-card').waitFor()
+  await page.locator('.gallery-filters button').filter({ hasText: 'Відео' }).click()
+  await page.getByText('У вибраному фільтрі немає файлів.').waitFor()
+  await page.getByRole('button', { name: 'Показати всі' }).click()
   await page.getByRole('button', { name: 'Вибрати' }).click()
   await page.locator('article.media-card .media-preview').first().click()
   const selectionBar = page.locator('.selection-bar')
@@ -151,6 +161,13 @@ try {
     .map((element) => ({ label: element.getAttribute('aria-label') || element.textContent?.trim(), ...element.getBoundingClientRect().toJSON() }))
     .filter((box) => box.width < 44 || box.height < 44))
   if (settingsTargets.length) throw new Error(`Settings touch targets below 44px: ${JSON.stringify(settingsTargets)}`)
+  await settingsDialog.getByLabel('Назва кімнати').fill('Mobile UX Updated')
+  await settingsDialog.locator('.lifetime-slider').fill('3')
+  await settingsDialog.getByRole('button', { name: 'Зберегти зміни' }).click()
+  await page.getByRole('heading', { name: 'Mobile UX Updated' }).waitFor()
+  await page.getByRole('button', { name: 'Налаштування кімнати' }).click()
+  await settingsDialog.waitFor()
+  await settingsDialog.locator('.setting-row').filter({ hasText: 'Приймати нових учасників' }).getByRole('switch').click()
   await settingsDialog.getByRole('button', { name: 'Переглянути' }).click()
   const membersDialog = page.getByRole('dialog', { name: 'Керування кімнатою' })
   await membersDialog.waitFor()
@@ -158,6 +175,18 @@ try {
   await membersDialog.getByRole('tab', { name: 'Історія' }).click()
   await membersDialog.getByText(/приєднався/).first().waitFor()
   await membersDialog.getByRole('button', { name: 'Закрити' }).click()
+
+  const closedJoin = await fetch(`${baseURL}/api/v1/rooms/${slug}/join`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${lateGuestAuth.access_token}` },
+    body: JSON.stringify({}),
+  })
+  if (closedJoin.status !== 403) throw new Error(`Closed room allowed a new member with status ${closedJoin.status}`)
+  await json(`/rooms/${slug}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${auth.access_token}` },
+    body: JSON.stringify({ accepting_members: true }),
+  })
 
   const viewportChecks = [
     { width: 768, height: 1024 },
@@ -186,7 +215,7 @@ try {
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.goto(baseURL, { waitUntil: 'networkidle' })
   await page.getByRole('heading', { name: 'Мої кімнати' }).waitFor()
-  await page.getByText('Mobile UX Check').waitFor()
+  await page.getByText('Mobile UX Updated').waitFor()
   await page.screenshot({ path: resolve(artifacts, 'home-1440.png'), fullPage: true })
   await page.setViewportSize({ width: 375, height: 812 })
   const homeOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
@@ -240,11 +269,12 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, archive: true, viewer: true, myRooms: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, galleryFilters: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()
   await json(`/rooms/${slug}`, { method: 'DELETE', headers: { Authorization: `Bearer ${cleanupAuth.access_token}` } }).catch(() => undefined)
   await json('/auth/session', { method: 'DELETE', headers: { Authorization: `Bearer ${auth.access_token}` } }).catch(() => undefined)
   await json('/auth/session', { method: 'DELETE', headers: { Authorization: `Bearer ${guestAuth.access_token}` } }).catch(() => undefined)
+  await json('/auth/session', { method: 'DELETE', headers: { Authorization: `Bearer ${lateGuestAuth.access_token}` } }).catch(() => undefined)
 }

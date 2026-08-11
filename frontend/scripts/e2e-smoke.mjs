@@ -101,8 +101,34 @@ try {
     await onboardingContext.close()
   }
 
+  await page.goto(baseURL, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Мої кімнати' }).waitFor()
+  await page.evaluate((roomSlug) => {
+    window.history.pushState({ usr: { justCreated: true }, key: 'e2e-activation', idx: 1 }, '', `/r/${roomSlug}`)
+    window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
+  }, slug)
+  await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
+  const activationPanel = page.getByRole('region', { name: 'Запустіть спільну галерею' })
+  await activationPanel.waitFor()
+  await activationPanel.getByText('Запросіть друзів').waitFor()
+  await activationPanel.getByText('Додайте перший кадр').waitFor()
+  const activationTargets = await activationPanel.locator('button:visible').evaluateAll((elements) => elements
+    .map((element) => ({ label: element.getAttribute('aria-label') || element.textContent?.trim(), ...element.getBoundingClientRect().toJSON() }))
+    .filter((box) => box.width < 44 || box.height < 44))
+  if (activationTargets.length) throw new Error(`Room activation touch targets below 44px: ${JSON.stringify(activationTargets)}`)
+  await page.screenshot({ path: resolve(artifacts, 'room-activation-375.png'), fullPage: true })
+  await activationPanel.getByRole('button', { name: 'Відкрити запрошення' }).click()
+  const activationShareDialog = page.getByRole('dialog', { name: 'Запросити друзів' })
+  await activationShareDialog.waitFor()
+  await activationShareDialog.getByRole('button', { name: 'Закрити' }).click()
+  await activationPanel.getByRole('button', { name: 'Запросити ще' }).waitFor()
+  await activationPanel.getByRole('button', { name: 'Закрити підказки' }).click()
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  if (await page.locator('.room-activation').count()) throw new Error('Room activation reopened after reload')
+
   await page.goto(`${baseURL}/r/${slug}`, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
+  if (await page.locator('.room-activation').count()) throw new Error('Direct room navigation showed owner activation')
 
   const realtimeResponse = page.waitForResponse((response) => response.url().endsWith(`/api/v1/rooms/${slug}/events`) && response.status() === 200)
   await page.goto(`${baseURL}/?tgWebAppStartParam=room_${slug}`, { waitUntil: 'domcontentloaded' })
@@ -384,7 +410,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, roomActivation: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

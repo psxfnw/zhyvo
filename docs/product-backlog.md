@@ -1,5 +1,11 @@
 # Product backlog
 
+## New-room activation
+
+Status: implemented in preview.
+
+Immediately after room creation, the owner sees two concrete next actions inside the otherwise empty gallery: invite participants through the existing share/QR flow and select the first original media. The panel is driven by one-time navigation state, so refreshes, direct invitations, returning owners, and ordinary members are never interrupted. It dismisses as soon as files enter the upload queue.
+
 ## First-run onboarding
 
 Status: implemented in preview.

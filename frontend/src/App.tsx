@@ -426,7 +426,7 @@ function HomePage() {
         lifetime_days: lifetime,
         access: { mode: accessMode, ...(accessMode === 'public' ? {} : { secret }) },
       })
-      navigate(`/r/${room.slug}`)
+      navigate(`/r/${room.slug}`, { state: { justCreated: true } })
     } catch (cause) {
       setError(errorMessage(cause))
     } finally {
@@ -1036,6 +1036,7 @@ function RoomPage() {
   const { slug: routeSlug = '' } = useParams()
   const slug = normalizeSlug(routeSlug)
   const navigate = useNavigate()
+  const location = useLocation()
   const session = useSession()
   const [searchParams, setSearchParams] = useSearchParams()
   const inputRef = useRef<HTMLInputElement>(null)
@@ -1095,6 +1096,8 @@ function RoomPage() {
   const [membersError, setMembersError] = useState('')
   const [realtimeConnected, setRealtimeConnected] = useState(false)
   const [newMediaCount, setNewMediaCount] = useState(0)
+  const [activationVisible, setActivationVisible] = useState(Boolean((location.state as { justCreated?: boolean } | null)?.justCreated))
+  const [activationShared, setActivationShared] = useState(false)
   const selectedMediaID = searchParams.get('media')
   const roomLoaded = room !== null
 
@@ -1103,6 +1106,15 @@ function RoomPage() {
   useEffect(() => { roomRef.current = room }, [room])
   useEffect(() => { membersOpenRef.current = membersOpen }, [membersOpen])
   useEffect(() => { membersTabRef.current = membersTab }, [membersTab])
+
+  useEffect(() => {
+    if (!(location.state as { justCreated?: boolean } | null)?.justCreated) return
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
+  }, [location.pathname, location.search, location.state, navigate])
+
+  useEffect(() => {
+    if (gallery.length > 0) setActivationVisible(false)
+  }, [gallery.length])
 
   useEffect(() => {
     if (!room || !session) return
@@ -1375,6 +1387,7 @@ function RoomPage() {
     })
     setUploads((current) => [...current.filter((item) => item.state !== 'done'), ...queue, ...rejected])
     if (!queue.length) { if (inputRef.current) inputRef.current.value = ''; return }
+    setActivationVisible(false)
     let nextIndex = 0
     const worker = async () => {
       while (nextIndex < queue.length) {
@@ -1449,6 +1462,7 @@ function RoomPage() {
   async function copyLink() {
     const url = roomInviteLink(slug)
     await navigator.clipboard.writeText(url)
+    setActivationShared(true)
     setCopied(true)
     setShareDialog(false)
     window.setTimeout(() => setCopied(false), 1800)
@@ -1853,6 +1867,26 @@ function RoomPage() {
           </div>
           {hasMore && <button className="secondary-button load-more" onClick={() => void loadGallery(true, cursor)}>Показати більше</button>}
         </>
+      ) : activationVisible && room.role === 'owner' && room.accepting_uploads ? (
+        <section className="room-activation" aria-labelledby="room-activation-title">
+          <header>
+            <div><p className="eyebrow">Кімната готова</p><h2 id="room-activation-title">Запустіть спільну галерею</h2></div>
+            <button onClick={() => setActivationVisible(false)} aria-label="Закрити підказки"><X /></button>
+          </header>
+          <div className="room-activation__steps">
+            <article className={activationShared ? 'is-complete' : ''}>
+              <span>01</span>
+              <div><Users /><h3>Запросіть друзів</h3><p>Поділіться посиланням або QR-кодом. Кожен зможе додати оригінали зі свого телефона.</p></div>
+              <button className="secondary-button" onClick={() => { setActivationShared(true); setShareDialog(true) }}>{activationShared ? <Check size={18} /> : <Share2 size={18} />}{activationShared ? 'Запросити ще' : 'Відкрити запрошення'}</button>
+            </article>
+            <article>
+              <span>02</span>
+              <div><Upload /><h3>Додайте перший кадр</h3><p>Виберіть одразу кілька фото чи відео — вони завантажаться у фоновій черзі без стиснення.</p></div>
+              <button className="primary-button" onClick={() => inputRef.current?.click()}><ImagePlus size={18} /> Вибрати медіа</button>
+            </article>
+          </div>
+          <footer><ShieldCheck size={16} /><span>Кімната видалиться автоматично: {new Date(room.expires_at).toLocaleString('uk-UA', { dateStyle: 'long', timeStyle: 'short' })}</span></footer>
+        </section>
       ) : (
         <section className="empty-gallery">
           <ImagePlus size={36} strokeWidth={1.5} />

@@ -1,4 +1,4 @@
-import type { AccessMode, BlockedRoomMember, GalleryPage, Identity, Room, RoomActivityEvent, RoomArchive, RoomMember, RoomNotificationSettings, RoomPreview, Session, UploadTicket } from '../types'
+import type { AccessMode, BlockedRoomMember, GalleryItem, GalleryPage, Identity, Room, RoomActivityEvent, RoomArchive, RoomInvite, RoomInviteList, RoomInvitePreview, RoomMember, RoomNotificationSettings, RoomPreview, RoomRecap, Session, UploadTicket } from '../types'
 
 const SESSION_KEY = 'photodrop.session.v1'
 
@@ -257,6 +257,13 @@ export const rooms = {
   join: (slug: string, secret = '') => api<{ room: Room }>(`/rooms/${slug}/join`, {
     method: 'POST', body: JSON.stringify({ secret }),
   }),
+  invitePreview: (token: string) => api<RoomInvitePreview>(`/invites/${encodeURIComponent(token)}/preview`, { auth: false }),
+  joinInvite: (token: string, secret = '') => api<{ room: Room }>(`/invites/${encodeURIComponent(token)}/join`, { method: 'POST', body: JSON.stringify({ secret }) }),
+  invites: (slug: string) => api<RoomInviteList>(`/rooms/${slug}/invites`),
+  shareInvite: (slug: string) => api<RoomInvite>(`/rooms/${slug}/share-invite`),
+  createInvite: (slug: string, permission: 'contributor' | 'viewer') => api<RoomInvite>(`/rooms/${slug}/invites`, { method: 'POST', body: JSON.stringify({ permission }) }),
+  revokeInvite: (slug: string, token: string) => api<void>(`/rooms/${slug}/invites/${encodeURIComponent(token)}`, { method: 'DELETE' }),
+  disableLegacyInvite: (slug: string) => api<void>(`/rooms/${slug}/legacy-invite`, { method: 'DELETE' }),
   get: (slug: string) => api<{ room: Room }>(`/rooms/${slug}`),
 	members: (slug: string) => api<{ members: RoomMember[]; blocked_members: BlockedRoomMember[] }>(`/rooms/${slug}/members`),
   removeMember: (slug: string, identityID: string) => api<void>(`/rooms/${slug}/members/${identityID}`, { method: 'DELETE' }),
@@ -265,6 +272,8 @@ export const rooms = {
     method: 'POST', body: JSON.stringify({ identity_id: identityID }),
   }),
   activity: (slug: string) => api<{ events: RoomActivityEvent[] }>(`/rooms/${slug}/activity`),
+  recap: (slug: string) => api<RoomRecap>(`/rooms/${slug}/recap`),
+  highlights: (slug: string) => api<{ items: GalleryItem[] }>(`/rooms/${slug}/highlights`),
   update: (slug: string, input: Partial<{ name: string; accepting_uploads: boolean; accepting_members: boolean; access: { mode: AccessMode; secret: string }; lifetime_days: number }>) =>
     api<{ room: Room }>(`/rooms/${slug}`, { method: 'PATCH', body: JSON.stringify(input) }),
   notifications: (slug: string) => api<RoomNotificationSettings>(`/rooms/${slug}/notifications`),

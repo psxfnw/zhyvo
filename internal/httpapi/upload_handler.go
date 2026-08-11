@@ -143,6 +143,20 @@ func (handler uploadHandler) gallery(response http.ResponseWriter, request *http
 	writeJSON(response, http.StatusOK, page)
 }
 
+func (handler uploadHandler) highlights(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	items, err := handler.service.Highlights(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), 12)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"items": items})
+}
+
 func (handler uploadHandler) download(response http.ResponseWriter, request *http.Request) {
 	principal, mediaID, ok := handler.principalAndMediaID(response, request)
 	if !ok {
@@ -257,6 +271,8 @@ func (handler uploadHandler) writeError(response http.ResponseWriter, request *h
 		writeAPIError(response, request, http.StatusForbidden, "ROOM_MEMBERSHIP_REQUIRED", "Join the room before uploading")
 	case errors.Is(err, media.ErrUploadsClosed):
 		writeAPIError(response, request, http.StatusConflict, "ROOM_UPLOADS_CLOSED", "Room no longer accepts uploads")
+	case errors.Is(err, media.ErrUploadPermission):
+		writeAPIError(response, request, http.StatusForbidden, "UPLOAD_NOT_ALLOWED", "This invitation allows viewing only")
 	case errors.Is(err, media.ErrRoomLimitReached):
 		writeAPIError(response, request, http.StatusConflict, "ROOM_STORAGE_LIMIT_REACHED", "Room storage or file limit has been reached")
 	case errors.Is(err, media.ErrUploadNotFound):

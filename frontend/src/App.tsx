@@ -11,6 +11,7 @@ import {
   Clock3,
   Copy,
   Crown,
+  Eye,
   FileImage,
   ImagePlus,
   Images,
@@ -39,13 +40,13 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import { ApiError, archives, auth, ensureIdentity, getSession, media, rooms, streamRoomEvents } from './lib/api'
 import { bytes, errorMessage, normalizeSlug, remaining } from './lib/format'
 import { canShareFiles, fetchShareFile, isMobileDevice, saveRemoteFile, sharePreparedFiles } from './lib/download'
-import { getTelegramBootstrapError, getTelegramWebApp, openTelegramInvite, roomInviteLink, telegramBrowserLink, telegramRoomLink } from './lib/telegram'
+import { getTelegramBootstrapError, getTelegramWebApp, managedBrowserInviteLink, managedInviteLink, openTelegramInvite, roomInviteLink, telegramBrowserLink, telegramInviteLink, telegramRoomLink } from './lib/telegram'
 import { uploadFile } from './lib/upload'
 import { loadUploadQueue, saveUploadQueue } from './lib/uploadQueue'
 import { mediaCapturedAt } from './lib/metadata'
 import { checksumFile } from './lib/checksum'
 import { completeTelegramLogin, startTelegramLogin } from './lib/telegramLogin'
-import type { AccessMode, BlockedRoomMember, GalleryItem, Room, RoomActivityEvent, RoomArchive, RoomMember, RoomNotificationSettings, RoomPreview, Session, UploadProgress } from './types'
+import type { AccessMode, BlockedRoomMember, GalleryItem, Room, RoomActivityEvent, RoomArchive, RoomInvite, RoomInviteList, RoomInvitePreview, RoomMember, RoomNotificationSettings, RoomPreview, RoomRecap, Session, UploadProgress } from './types'
 
 function uuid() {
   return crypto.randomUUID()
@@ -578,7 +579,7 @@ function TelegramLoginCallback() {
   return <main className="status-page"><Brand />{error ? <><h1>Не вдалося увійти</h1><p>{error}</p><Link className="primary-button" to="/">На головну</Link></> : <><div className="loading-line" /><p>Підключаємо Telegram і переносимо ваші кімнати…</p></>}</main>
 }
 
-function JoinRoom({ preview, onJoined }: { preview: RoomPreview; onJoined: (room: Room) => void }) {
+function JoinRoom({ preview, onJoined, joinRoom }: { preview: RoomPreview; onJoined: (room: Room) => void; joinRoom?: (secret: string) => Promise<{ room: Room }> }) {
   const session = useSession()
   const [displayName, setDisplayName] = useState('')
   const [secret, setSecret] = useState('')
@@ -591,7 +592,7 @@ function JoinRoom({ preview, onJoined }: { preview: RoomPreview; onJoined: (room
     setError('')
     try {
       await ensureIdentity(displayName)
-      const { room } = await rooms.join(preview.slug, secret)
+      const { room } = await (joinRoom ? joinRoom(secret) : rooms.join(preview.slug, secret))
       onJoined(room)
     } catch (cause) {
       setError(errorMessage(cause))
@@ -606,6 +607,7 @@ function JoinRoom({ preview, onJoined }: { preview: RoomPreview; onJoined: (room
       <section className="join-card">
         <p className="eyebrow">Кімната {preview.slug}</p>
         <h1>{preview.name}</h1>
+        {'permission' in preview && <div className="invite-permission-note">{(preview as RoomInvitePreview).permission === 'viewer' ? <><Eye size={18} /><span><strong>Лише перегляд</strong>Ви зможете дивитися та зберігати файли.</span></> : <><Upload size={18} /><span><strong>Можна додавати</strong>Ви зможете завантажувати свої фото й відео.</span></>}</div>}
         <p>Медіа зберігаються до {new Date(preview.expires_at).toLocaleString('uk-UA', { dateStyle: 'long', timeStyle: 'short' })}.</p>
         {!preview.accepting_members ? (
           <div className="joining-closed"><LockKeyhole size={24} /><div><strong>Кімната закрита для нових учасників</strong><span>Власник тимчасово вимкнув приєднання за посиланням.</span></div></div>
@@ -633,6 +635,21 @@ function JoinRoom({ preview, onJoined }: { preview: RoomPreview; onJoined: (room
       </section>
     </main>
   )
+}
+
+function ManagedInvitePage() {
+  const { token = '' } = useParams()
+  const navigate = useNavigate()
+  const [preview, setPreview] = useState<RoomInvitePreview | null>(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    rooms.invitePreview(token).then((result) => { if (active) setPreview(result) }).catch((cause) => { if (active) setError(errorMessage(cause)) })
+    return () => { active = false }
+  }, [token])
+  if (error) return <main className="status-page"><Brand /><h1>Запрошення недійсне</h1><p>{error}</p><Link className="primary-button" to="/">На головну</Link></main>
+  if (!preview) return <main className="status-page"><Brand /><div className="loading-line" /><p>Перевіряємо запрошення…</p></main>
+  return <JoinRoom preview={preview} joinRoom={(secret) => rooms.joinInvite(token, secret)} onJoined={(room) => navigate(`/r/${room.slug}`, { replace: true })} />
 }
 
 function UploadQueue({ uploads, onCancel, onPause, onRetry, onClearCompleted }: {
@@ -864,17 +881,44 @@ function MobileSaveDialog({ slug, roomName, initialItems, onClose, onError }: {
   )
 }
 
-function ShareDialog({ room, webURL, telegramURL, previewURL, onClose, onCopied }: {
+function ShareDialog({ room, webURL: fallbackWebURL, telegramURL: fallbackTelegramURL, previewURL: fallbackPreviewURL, onClose, onCopied }: {
   room: Room
   webURL: string
   telegramURL: string
   previewURL: string
   onClose: () => void
-  onCopied: () => void
+  onCopied: (url: string) => void
 }) {
   const closeRef = useRef<HTMLButtonElement>(null)
   const shareNavigator = navigator as Navigator & { share?: (data?: ShareData) => Promise<void> }
   const supportsNativeShare = typeof shareNavigator.share === 'function'
+  const [inviteList, setInviteList] = useState<RoomInviteList | null>(null)
+  const [permission, setPermission] = useState<'contributor' | 'viewer'>('contributor')
+  const [busy, setBusy] = useState(true)
+  const [error, setError] = useState('')
+  const selectedInvite = inviteList?.invites.find((invite) => !invite.revoked_at && invite.permission === permission)
+  const telegramURL = selectedInvite ? telegramInviteLink(selectedInvite.token) : fallbackTelegramURL
+  const previewURL = selectedInvite ? managedInviteLink(selectedInvite.token) : fallbackPreviewURL
+  const webURL = selectedInvite ? managedBrowserInviteLink(selectedInvite.token) : fallbackWebURL
+
+  const loadInvites = useCallback(async () => {
+    setBusy(true)
+    setError('')
+    try {
+      if (room.role !== 'owner') {
+        const invite = await rooms.shareInvite(room.slug)
+        setInviteList({ invites: [invite], legacy_invites_enabled: false })
+        return
+      }
+      let result = await rooms.invites(room.slug)
+      if (!result.invites.some((invite) => !invite.revoked_at && invite.permission === 'contributor')) {
+        const created = await rooms.createInvite(room.slug, 'contributor')
+        result = { ...result, invites: [created, ...result.invites] }
+      }
+      setInviteList(result)
+    } catch (cause) { setError(errorMessage(cause)) } finally { setBusy(false) }
+  }, [room.role, room.slug])
+
   useEffect(() => {
     const previousFocus = document.activeElement as HTMLElement | null
     closeRef.current?.focus()
@@ -882,6 +926,39 @@ function ShareDialog({ room, webURL, telegramURL, previewURL, onClose, onCopied 
     document.addEventListener('keydown', onKeyDown)
     return () => { document.removeEventListener('keydown', onKeyDown); previousFocus?.focus() }
   }, [onClose])
+
+  useEffect(() => { void loadInvites() }, [loadInvites])
+
+  async function choosePermission(next: 'contributor' | 'viewer') {
+    setPermission(next)
+    if (room.role !== 'owner' || inviteList?.invites.some((invite) => !invite.revoked_at && invite.permission === next)) return
+    setBusy(true)
+    setError('')
+    try {
+      const created = await rooms.createInvite(room.slug, next)
+      setInviteList((current) => current ? { ...current, invites: [created, ...current.invites] } : current)
+    } catch (cause) { setError(errorMessage(cause)) } finally { setBusy(false) }
+  }
+
+  async function rotateInvite(invite: RoomInvite) {
+    if (!window.confirm('Старе посилання одразу перестане працювати. Створити нове?')) return
+    setBusy(true)
+    setError('')
+    try {
+      await rooms.revokeInvite(room.slug, invite.token)
+      const created = await rooms.createInvite(room.slug, invite.permission)
+      setInviteList((current) => current ? { ...current, invites: [created, ...current.invites.map((item) => item.token === invite.token ? { ...item, revoked_at: new Date().toISOString() } : item)] } : current)
+    } catch (cause) { setError(errorMessage(cause)) } finally { setBusy(false) }
+  }
+
+  async function disableLegacy() {
+    if (!window.confirm('Старі посилання з кодом кімнати перестануть працювати для нових учасників. Продовжити?')) return
+    setBusy(true)
+    try {
+      await rooms.disableLegacyInvite(room.slug)
+      setInviteList((current) => current ? { ...current, legacy_invites_enabled: false } : current)
+    } catch (cause) { setError(errorMessage(cause)) } finally { setBusy(false) }
+  }
 
   async function nativeShare() {
     if (!shareNavigator.share) return
@@ -892,14 +969,18 @@ function ShareDialog({ room, webURL, telegramURL, previewURL, onClose, onCopied 
     <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-title" onMouseDown={(event) => event.stopPropagation()}>
         <header><div><p className="eyebrow">Кімната {room.slug}</p><h2 id="share-title">Запросити друзів</h2></div><button ref={closeRef} className="icon-button" onClick={onClose} aria-label="Закрити"><X /></button></header>
-        <div className="qr-wrap"><QRCodeSVG value={telegramURL} size={224} level="M" title={`QR-код кімнати ${room.slug}`} data-invite-url={telegramURL} /></div>
-        <p className="share-note">QR-код відкриє цю кімнату прямо в Telegram. Для захищеної кімнати PIN чи пароль передайте окремо.</p>
+        {room.role === 'owner' && <div className="invite-permission-tabs" role="tablist" aria-label="Права за посиланням"><button role="tab" aria-selected={permission === 'contributor'} onClick={() => void choosePermission('contributor')}><Upload size={17} /> Можуть додавати</button><button role="tab" aria-selected={permission === 'viewer'} onClick={() => void choosePermission('viewer')}><Eye size={17} /> Лише перегляд</button></div>}
+        <div className="qr-wrap">{busy && !selectedInvite ? <div className="invite-loading" aria-label="Створюємо захищене посилання"><span /><span /></div> : <QRCodeSVG value={telegramURL} size={224} level="M" title={`QR-код кімнати ${room.slug}`} data-invite-url={telegramURL} />}</div>
+        <p className="share-note">{permission === 'viewer' && room.role === 'owner' ? 'За цим QR можна переглядати та зберігати файли, але не завантажувати нові.' : 'QR-код відкриє кімнату прямо в Telegram і дозволить додавати медіа.'} {room.access_mode !== 'public' && 'PIN чи пароль передайте окремо.'}</p>
+        {error && <p className="form-error invite-error" role="alert">{error}</p>}
         <div className="share-actions">
-          <button className="primary-button share-actions__telegram" onClick={() => openTelegramInvite(room.name, previewURL)}><Send size={18} /> Надіслати в Telegram</button>
-          <button className="secondary-button" onClick={onCopied}><Copy size={18} /> Копіювати запрошення</button>
-          {supportsNativeShare && <button className="secondary-button" onClick={nativeShare}><Share2 size={18} /> Інші застосунки</button>}
+          <button className="primary-button share-actions__telegram" disabled={busy} onClick={() => openTelegramInvite(room.name, previewURL)}><Send size={18} /> Надіслати в Telegram</button>
+          <button className="secondary-button" disabled={busy} onClick={() => onCopied(previewURL)}><Copy size={18} /> Копіювати запрошення</button>
+          {supportsNativeShare && <button className="secondary-button" disabled={busy} onClick={nativeShare}><Share2 size={18} /> Інші застосунки</button>}
         </div>
         <a className="browser-invite-link" href={webURL}>Відкрити кімнату у браузері</a>
+        {room.role === 'owner' && selectedInvite && <div className="invite-management"><div><strong>{permission === 'viewer' ? 'Посилання лише для перегляду' : 'Посилання для учасників'}</strong><span>Використано входів: {selectedInvite.join_count}</span></div><button disabled={busy} onClick={() => void rotateInvite(selectedInvite)}><RefreshCw size={16} /> Замінити</button></div>}
+        {room.role === 'owner' && inviteList?.legacy_invites_enabled && <button className="legacy-invite-button" disabled={busy} onClick={() => void disableLegacy()}><LockKeyhole size={16} /> Вимкнути старе посилання з кодом {room.slug}</button>}
       </section>
     </div>
   )
@@ -1029,6 +1110,85 @@ function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, 
         </dl>
       </footer>
     </div>
+  )
+}
+
+function RecapPage() {
+  const { slug: routeSlug = '' } = useParams()
+  const slug = normalizeSlug(routeSlug)
+  const [room, setRoom] = useState<Room | null>(null)
+  const [recap, setRecap] = useState<RoomRecap | null>(null)
+  const [highlights, setHighlights] = useState<GalleryItem[]>([])
+  const [archive, setArchive] = useState<RoomArchive | null>(null)
+  const [mobileSaveOpen, setMobileSaveOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let active = true
+    Promise.all([rooms.get(slug), rooms.recap(slug), rooms.highlights(slug)]).then(([roomResult, recapResult, highlightResult]) => {
+      if (!active) return
+      setRoom(roomResult.room)
+      setRecap(recapResult)
+      setHighlights(highlightResult.items)
+    }).catch((cause) => { if (active) setError(errorMessage(cause)) })
+    return () => { active = false }
+  }, [slug])
+
+  useEffect(() => {
+    if (!archive || !['pending', 'processing'].includes(archive.status)) return
+    const timer = window.setInterval(() => void archives.get(archive.id).then((result) => setArchive(result.archive)).catch((cause) => setError(errorMessage(cause))), 1500)
+    return () => window.clearInterval(timer)
+  }, [archive])
+
+  async function saveAll() {
+    if (!room || busy) return
+    if (isMobileDevice()) { setMobileSaveOpen(true); return }
+    setBusy(true)
+    setError('')
+    try {
+      let current = archive
+      if (!current || current.status === 'failed') {
+        current = (await archives.request(slug)).archive
+        setArchive(current)
+      }
+      if (current.status === 'ready') {
+        const download = await archives.download(current.id)
+        const anchor = document.createElement('a')
+        anchor.href = download.url
+        anchor.download = download.filename
+        anchor.rel = 'noopener'
+        anchor.click()
+      }
+    } catch (cause) { setError(errorMessage(cause)) } finally { setBusy(false) }
+  }
+
+  if (error && !room) return <main className="status-page"><Brand /><h1>Не вдалося відкрити підсумок</h1><p>{error}</p><Link className="primary-button" to={`/r/${slug}`}>До кімнати</Link></main>
+  if (!room || !recap) return <main className="status-page"><Brand /><div className="loading-line" /><p>Збираємо підсумок події…</p></main>
+  const archiveLabel = archive?.status === 'ready' ? 'Завантажити ZIP' : archive?.status === 'failed' ? 'Повторити ZIP' : archive ? `${archive.processed_files} із ${archive.total_files}` : isMobileDevice() ? 'Зберегти на телефон' : 'Підготувати ZIP'
+  return (
+    <main className="recap-shell">
+      <header className="recap-topbar"><Brand compact /><Link to={`/r/${slug}`}><ArrowLeft size={18} /> До галереї</Link></header>
+      <section className="recap-hero">
+        <p className="eyebrow">Підсумок події</p>
+        <h1>{room.name}</h1>
+        <p>{new Date(recap.created_at).toLocaleDateString('uk-UA', { dateStyle: 'long' })} · зберігається до {new Date(recap.expires_at).toLocaleString('uk-UA', { dateStyle: 'long', timeStyle: 'short' })}</p>
+      </section>
+      <section className="recap-stats" aria-label="Статистика події">
+        <div><strong>{recap.media_count}</strong><span>файлів</span></div>
+        <div><strong>{recap.member_count}</strong><span>учасників</span></div>
+        <div><strong>{recap.contributor_count}</strong><span>авторів</span></div>
+        <div><strong>{recap.favorite_count}</strong><span>вподобань</span></div>
+      </section>
+      <section className="recap-breakdown"><span><Images size={18} /> {recap.image_count} фото</span><span><Video size={18} /> {recap.video_count} відео</span><span><Archive size={18} /> {bytes(recap.total_bytes)}</span></section>
+      <section className="recap-highlights">
+        <header><div><p className="eyebrow">Вибір учасників</p><h2>Найкращі моменти</h2></div><span>{highlights.length}</span></header>
+        {highlights.length ? <div className="recap-grid">{highlights.map((item, index) => <Link to={`/r/${slug}?media=${item.id}`} className="recap-frame" key={item.id}><span>{String(index + 1).padStart(2, '0')}</span>{item.thumbnail_url ? <img src={item.thumbnail_url} alt={item.caption || item.original_filename} /> : <div><FileImage /></div>}<small><Heart size={13} fill={item.favorite_count ? 'currentColor' : 'none'} /> {item.favorite_count}</small></Link>)}</div> : <div className="recap-empty"><Images /><p>Найкращі моменти з’являться після перших завантажень.</p></div>}
+      </section>
+      <section className="recap-save"><div><p className="eyebrow">До автовидалення</p><h2>Збережіть оригінали</h2><p>Після завершення строку відновити файли буде неможливо.</p></div><button className="primary-button" disabled={busy || archive?.status === 'pending' || archive?.status === 'processing'} onClick={() => void saveAll()}><ArrowDownToLine size={19} /> {archiveLabel}</button></section>
+      {error && <p className="form-error recap-error" role="alert">{error}</p>}
+      {mobileSaveOpen && <MobileSaveDialog slug={slug} roomName={room.name} onClose={() => setMobileSaveOpen(false)} onError={setError} />}
+    </main>
   )
 }
 
@@ -1466,8 +1626,7 @@ function RoomPage() {
     })
   }
 
-  async function copyLink() {
-    const url = roomInviteLink(slug)
+  async function copyLink(url = roomInviteLink(slug)) {
     await navigator.clipboard.writeText(url)
     setActivationShared(true)
     setCopied(true)
@@ -1788,6 +1947,7 @@ function RoomPage() {
       <header className="room-topbar">
         <Brand compact />
         <div className="room-topbar__actions">
+          {gallery.length > 0 && <Link className="recap-button" to={`/r/${slug}/recap`}><Images size={17} /><span>Підсумок</span></Link>}
           <button className="share-button" onClick={() => setShareDialog(true)}>{copied ? <Check size={17} /> : <Share2 size={17} />}{copied ? 'Скопійовано' : 'Запросити'}</button>
           {room.role === 'owner' && <button className="icon-button" onClick={() => setSettings(true)} aria-label="Налаштування кімнати"><Menu /></button>}
         </div>
@@ -1815,6 +1975,7 @@ function RoomPage() {
           </div>
           {(gallery.length > 0 || (room.role === 'owner' && roomLifetimeDays < 3)) && <div className="expiry-warning__actions">
             {gallery.length > 0 && <button className="primary-button" onClick={() => isMobileDevice() ? setMobileSaveOpen(true) : void handleArchive()}><ArrowDownToLine size={18} /> Зберегти файли</button>}
+            {gallery.length > 0 && <Link className="secondary-button" to={`/r/${slug}/recap`}><Images size={18} /> Підсумок події</Link>}
             {room.role === 'owner' && roomLifetimeDays < 3 && <button className="secondary-button" onClick={() => setSettings(true)}><Clock3 size={18} /> Продовжити строк</button>}
           </div>}
         </section>
@@ -1842,12 +2003,12 @@ function RoomPage() {
               <span>{isMobileDevice() ? 'Зберегти на телефон' : roomArchive?.status === 'ready' ? 'Завантажити ZIP' : roomArchive?.status === 'failed' ? 'Повторити ZIP' : roomArchive ? `${roomArchive.processed_files}/${roomArchive.total_files}` : 'Завантажити все'}</span>
             </button>
           )}
-          {room.accepting_uploads ? (
+          {room.accepting_uploads && room.can_upload ? (
           <>
             <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,image/avif,image/gif,video/mp4,video/quicktime,video/webm,video/x-m4v,video/3gpp" multiple hidden onChange={(event) => void acceptFiles(event.target.files)} />
             <button className="primary-button primary-button--fit upload-button" onClick={() => inputRef.current?.click()} aria-label="Додати фото або відео"><ImagePlus size={21} /><span>Додати медіа</span></button>
           </>
-          ) : <span className="uploads-closed"><LockKeyhole size={16} /> Завантаження закриті</span>}
+          ) : <span className="uploads-closed"><LockKeyhole size={16} /> {room.accepting_uploads ? 'Доступ лише для перегляду' : 'Завантаження закриті'}</span>}
         </div>
       </section>
       <input ref={resumeInputRef} data-resume-upload type="file" hidden onChange={(event) => resumeUpload(event.target.files)} />
@@ -1917,8 +2078,8 @@ function RoomPage() {
         <section className="empty-gallery">
           <ImagePlus size={36} strokeWidth={1.5} />
           <h2>{gallery.length ? 'Тут поки порожньо' : 'Тут ще немає медіа'}</h2>
-          <p>{gallery.length ? galleryFilter === 'favorites' ? 'Додайте серце кадрам, які хочете зберегти.' : 'У вибраному фільтрі немає файлів.' : room.accepting_uploads ? 'Додайте перші фото або відео з події.' : 'Власник кімнати закрив завантаження.'}</p>
-          {gallery.length ? <button className="text-link" onClick={() => setGalleryFilter('all')}>Показати всі</button> : room.accepting_uploads && <button className="text-link" onClick={() => inputRef.current?.click()}>Вибрати з галереї</button>}
+          <p>{gallery.length ? galleryFilter === 'favorites' ? 'Додайте серце кадрам, які хочете зберегти.' : 'У вибраному фільтрі немає файлів.' : room.accepting_uploads && room.can_upload ? 'Додайте перші фото або відео з події.' : room.accepting_uploads ? 'Це запрошення дозволяє лише переглядати галерею.' : 'Власник кімнати закрив завантаження.'}</p>
+          {gallery.length ? <button className="text-link" onClick={() => setGalleryFilter('all')}>Показати всі</button> : room.accepting_uploads && room.can_upload && <button className="text-link" onClick={() => inputRef.current?.click()}>Вибрати з галереї</button>}
         </section>
       )}
 
@@ -1941,7 +2102,7 @@ function RoomPage() {
         </aside>
       )}
 
-      {shareDialog && <ShareDialog room={room} webURL={shareURL} telegramURL={telegramInviteURL} previewURL={previewInviteURL} onClose={() => setShareDialog(false)} onCopied={() => void copyLink()} />}
+      {shareDialog && <ShareDialog room={room} webURL={shareURL} telegramURL={telegramInviteURL} previewURL={previewInviteURL} onClose={() => setShareDialog(false)} onCopied={(url) => void copyLink(url)} />}
       {mobileSaveOpen && <MobileSaveDialog slug={slug} roomName={room.name} initialItems={mobileSaveItems} onClose={() => { setMobileSaveOpen(false); setMobileSaveItems(undefined) }} onError={setError} />}
 
       {membersOpen && (
@@ -1958,7 +2119,7 @@ function RoomPage() {
                   {members.map((member) => (
                     <div className="member-row" key={member.id}>
                       <span className="member-avatar" aria-hidden="true">{member.display_name.trim().slice(0, 1).toLocaleUpperCase('uk-UA')}</span>
-                      <div><strong>{member.display_name}</strong><span>Приєднався {new Date(member.joined_at).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })}</span></div>
+                      <div><strong>{member.display_name}</strong><span>Приєднався {new Date(member.joined_at).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })}{member.role !== 'owner' ? ` · ${member.can_upload ? 'може додавати' : 'лише перегляд'}` : ''}</span></div>
                       {member.role === 'owner' ? <small>Власник</small> : (
                         <div className="member-actions">
                           <button disabled={memberActionID === member.id} onClick={() => void transferOwnership(member)} aria-label={`Передати кімнату користувачу ${member.display_name}`} title="Передати права власника"><Crown size={17} /></button>
@@ -2028,6 +2189,8 @@ export default function App() {
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/r/:slug" element={<RoomPage />} />
+        <Route path="/r/:slug/recap" element={<RecapPage />} />
+        <Route path="/i/:token" element={<ManagedInvitePage />} />
         <Route path="/auth/telegram/callback" element={<TelegramLoginCallback />} />
 		<Route path="/auth/telegram/link" element={<BrowserLinkPage />} />
 		<Route path="/auth/telegram/link-confirm" element={<TelegramLinkConfirmPage />} />

@@ -54,6 +54,59 @@ type GalleryPage struct {
 	HasMore    bool          `json:"has_more"`
 }
 
+func (s *Service) Highlights(ctx context.Context, identityID uuid.UUID, slug string, limit int) ([]GalleryItem, error) {
+	if limit < 1 || limit > 24 {
+		return nil, fmt.Errorf("%w: limit must be between 1 and 24", ErrInvalidInput)
+	}
+	roomID, role, err := s.roomMembership(ctx, identityID, slug)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT m.id, m.media_type, m.mime_type, m.original_filename, m.size_bytes,
+		       m.width, m.height, m.duration_ms, m.captured_at, m.created_at,
+		       m.thumbnail_key, m.thumbnail_status, i.id, i.display_name, m.uploader_identity_id,
+		       (SELECT count(*)::integer FROM media_favorites favorite WHERE favorite.media_id = m.id),
+		       EXISTS (SELECT 1 FROM media_favorites favorite WHERE favorite.media_id = m.id AND favorite.identity_id = $2),
+		       COALESCE(r.cover_media_id = m.id, false), m.caption, m.caption_updated_at
+		FROM media m
+		JOIN identities i ON i.id = m.uploader_identity_id
+		JOIN rooms r ON r.id = m.room_id
+		WHERE m.room_id = $1 AND m.status = 'ready'
+		ORDER BY (SELECT count(*) FROM media_favorites favorite WHERE favorite.media_id = m.id) DESC,
+		         COALESCE(m.captured_at, m.created_at) DESC, m.id DESC
+		LIMIT $3
+	`, roomID, identityID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query room highlights: %w", err)
+	}
+	defer rows.Close()
+	items := make([]GalleryItem, 0, limit)
+	for rows.Next() {
+		var item GalleryItem
+		var uploaderID uuid.UUID
+		if err := rows.Scan(
+			&item.ID, &item.MediaType, &item.MIMEType, &item.OriginalFilename, &item.SizeBytes,
+			&item.Width, &item.Height, &item.DurationMS, &item.CapturedAt, &item.CreatedAt,
+			&item.thumbnailKey, &item.ThumbnailStatus, &item.UploadedBy.ID, &item.UploadedBy.DisplayName, &uploaderID,
+			&item.FavoriteCount, &item.Favorited, &item.IsCover, &item.Caption, &item.CaptionUpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan room highlight: %w", err)
+		}
+		item.Permissions.CanDelete = role == "owner" || uploaderID == identityID
+		item.Permissions.CanEditCaption = role == "owner" || uploaderID == identityID
+		if item.thumbnailKey != nil {
+			url, _, err := s.store.PresignGet(ctx, *item.thumbnailKey, "")
+			if err != nil {
+				return nil, err
+			}
+			item.ThumbnailURL = &url
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 type Download struct {
 	URL       string    `json:"url"`
 	ExpiresAt time.Time `json:"expires_at"`

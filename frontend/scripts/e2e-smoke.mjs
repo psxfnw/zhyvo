@@ -46,6 +46,10 @@ const lateGuestAuth = await json('/auth/anonymous', {
   method: 'POST',
   body: JSON.stringify({ display_name: 'E2E Late Guest', client_type: 'web' }),
 })
+const viewerAuth = await json('/auth/anonymous', {
+  method: 'POST',
+  body: JSON.stringify({ display_name: 'E2E Viewer', client_type: 'web' }),
+})
 let cleanupAuth = auth
 await json(`/rooms/${slug}/join`, {
   method: 'POST',
@@ -143,15 +147,33 @@ try {
   await page.getByRole('button', { name: 'Запросити' }).click()
   const shareDialog = page.getByRole('dialog', { name: 'Запросити друзів' })
   await shareDialog.waitFor()
-  if (await shareDialog.locator('.qr-wrap > svg').count() !== 1) throw new Error('QR code was not rendered')
-  const expectedInviteURL = `https://t.me/zhyvoappbot?startapp=room_${slug}`
+  await shareDialog.locator('.qr-wrap > svg').waitFor()
   const qrInviteURL = await shareDialog.locator('.qr-wrap > svg').getAttribute('data-invite-url')
-  if (qrInviteURL !== expectedInviteURL) throw new Error(`Unexpected QR invite URL: ${qrInviteURL}`)
+  const inviteToken = qrInviteURL?.match(/startapp=invite_([A-Za-z0-9_-]{43})$/)?.[1]
+  if (!inviteToken) throw new Error(`Unexpected managed QR invite URL: ${qrInviteURL}`)
   await shareDialog.getByRole('button', { name: 'Надіслати в Telegram' }).waitFor()
   const browserInviteURL = await shareDialog.getByRole('link', { name: 'Відкрити кімнату у браузері' }).getAttribute('href')
-  if (browserInviteURL !== `${baseURL}/r/${slug}`) throw new Error(`Unexpected browser invite URL: ${browserInviteURL}`)
+  if (browserInviteURL !== `${baseURL}/i/${inviteToken}`) throw new Error(`Unexpected browser invite URL: ${browserInviteURL}`)
   await page.screenshot({ path: resolve(artifacts, 'share-375.png'), fullPage: true })
   await shareDialog.getByRole('button', { name: 'Закрити' }).click()
+
+  const viewerInvite = await json(`/rooms/${slug}/invites`, {
+    method: 'POST', headers: { Authorization: `Bearer ${auth.access_token}` }, body: JSON.stringify({ permission: 'viewer' }),
+  })
+  const viewerPreview = await json(`/invites/${viewerInvite.token}/preview`)
+  if (viewerPreview.permission !== 'viewer' || viewerPreview.slug !== slug) throw new Error('Viewer invitation preview has wrong permission or room')
+  const viewerJoined = await json(`/invites/${viewerInvite.token}/join`, {
+    method: 'POST', headers: { Authorization: `Bearer ${viewerAuth.access_token}` }, body: JSON.stringify({}),
+  })
+  if (viewerJoined.room.can_upload) throw new Error('Viewer invitation granted upload permission')
+  const forbiddenViewerUpload = await fetch(`${baseURL}/api/v1/rooms/${slug}/uploads`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${viewerAuth.access_token}`, 'Idempotency-Key': crypto.randomUUID() },
+    body: JSON.stringify({ filename: 'viewer.png', mime_type: 'image/png', size_bytes: 10 }),
+  })
+  if (forbiddenViewerUpload.status !== 403) throw new Error(`Viewer upload returned ${forbiddenViewerUpload.status}`)
+  await json(`/rooms/${slug}/invites/${viewerInvite.token}`, { method: 'DELETE', headers: { Authorization: `Bearer ${auth.access_token}` } })
+  const revokedPreview = await fetch(`${baseURL}/api/v1/invites/${viewerInvite.token}/preview`)
+  if (revokedPreview.status !== 404) throw new Error(`Revoked invitation preview returned ${revokedPreview.status}`)
 
   let interruptedPUTs = 0
   await page.route('**/*', async (route) => {
@@ -300,6 +322,19 @@ try {
   await page.screenshot({ path: resolve(artifacts, 'viewer-375.png') })
   await page.getByRole('button', { name: 'Закрити перегляд' }).click()
   await page.getByText('Обкладинка').waitFor()
+  await page.goto(`${baseURL}/r/${slug}/recap`, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
+  await page.getByRole('region', { name: 'Статистика події' }).getByText('1', { exact: true }).first().waitFor()
+  await page.getByRole('heading', { name: 'Найкращі моменти' }).waitFor()
+  await page.locator('.recap-frame img').first().evaluate((image) => image.complete && image.naturalWidth > 0
+    ? true
+    : new Promise((resolve, reject) => {
+      image.addEventListener('load', () => resolve(true), { once: true })
+      image.addEventListener('error', () => reject(new Error('Recap highlight failed to load')), { once: true })
+    }))
+  await page.screenshot({ path: resolve(artifacts, 'recap-375.png'), fullPage: true })
+  await page.getByRole('link', { name: 'До галереї' }).click()
+  await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
   await page.getByRole('button', { name: 'Налаштування кімнати' }).click()
   const settingsDialog = page.getByRole('dialog', { name: 'Налаштування' })
   await settingsDialog.waitFor()
@@ -438,7 +473,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, roomActivation: true, expiryWarning: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, roomActivation: true, expiryWarning: true, managedInvites: true, viewerPermission: true, inviteRevocation: true, recap: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()
@@ -446,4 +481,5 @@ try {
   await json('/auth/session', { method: 'DELETE', headers: { Authorization: `Bearer ${auth.access_token}` } }).catch(() => undefined)
   await json('/auth/session', { method: 'DELETE', headers: { Authorization: `Bearer ${guestAuth.access_token}` } }).catch(() => undefined)
   await json('/auth/session', { method: 'DELETE', headers: { Authorization: `Bearer ${lateGuestAuth.access_token}` } }).catch(() => undefined)
+  await json('/auth/session', { method: 'DELETE', headers: { Authorization: `Bearer ${viewerAuth.access_token}` } }).catch(() => undefined)
 }

@@ -1,5 +1,23 @@
 # Product backlog
 
+## Report a problem
+
+Status: designed, not yet implemented.
+
+A persistent but quiet `Повідомити про помилку` entry will open an in-app form with a required description and optional contact. With explicit consent, Zhyvo will attach only technical context needed for diagnosis: current route, app build, platform/browser, Telegram Mini App flag, latest request ID, and timestamp. It will never attach room media, PIN/password values, Telegram init data, access tokens, or filenames by default. Submissions should enter a small server-side issue inbox with rate limiting and a reference number shown to the user; production can later forward the same sanitized payload to Sentry, Linear, or email without changing the client flow.
+
+## Managed room invitations
+
+Status: implemented in preview.
+
+Owners have separate revocable links for contributors and view-only guests. A view-only member can browse, favorite, and save originals but the API—not only the interface—rejects uploads. Replacing a link immediately invalidates its old token without removing anyone already in the room. Existing room-code links remain available during migration and can be permanently disabled by the owner. Active members can share the current contributor link, while only the owner can create, rotate, or revoke invitations.
+
+## Event recap
+
+Status: implemented in preview.
+
+Every non-empty room has a compact end-of-event page with total files, participants, contributors, favorites, image/video split, original storage size, and server-ranked highlights across the complete gallery. It links back to each highlighted frame and uses the same device-aware save flow as the gallery: asynchronous ZIP on desktop and native batched sharing or per-file saving on mobile.
+
 ## Expiry warnings and Telegram reminders
 
 Status: implemented in preview.

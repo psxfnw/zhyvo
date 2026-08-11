@@ -32,10 +32,14 @@ This changes name resolution only inside the launched test browser and does not 
 - Open the Mini App from `@zhyvoappbot` and from a room invite link.
 - Create a room, leave it, and confirm it remains under `Мої кімнати`.
 - Join from a second Telegram account and confirm the room opens directly.
+- Create separate `Можуть додавати` and `Лише перегляд` links. Confirm the latter can browse and save but receives `UPLOAD_NOT_ALLOWED` when attempting an upload.
+- Replace a managed link and confirm its old URL no longer opens; confirm an already joined member keeps room access.
+- Disable the legacy room-code link and confirm active members still share the current managed contributor link.
 - Upload several photos, one video, and—when available—an HEIC photo.
 - Upload the same bytes under another filename and confirm Zhyvo reports `Вже є в галереї` without increasing room storage.
 - Confirm thumbnails have the right orientation and a video shows its duration.
 - Add favorites from two accounts, verify the shared count, and open `Обрані` and `Найкращі`.
+- Open `Підсумок події`, verify its full-room counts and highlights, then start the device-appropriate save-all flow from that page.
 - Keep the room open on two devices, change a favorite and upload a file on the second one, and confirm the first updates without reloading.
 - Scroll below the gallery heading before the second-device upload and confirm the `Нових файлів` shelf returns to the fresh media.
 - Add and edit a caption in the viewer, confirm another open device updates live, and verify a regular member cannot edit someone else's caption.

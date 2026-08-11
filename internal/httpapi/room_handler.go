@@ -44,6 +44,10 @@ type updateNotificationsRequest struct {
 	TelegramEnabled bool `json:"telegram_enabled"`
 }
 
+type createInviteRequest struct {
+	Permission string `json:"permission"`
+}
+
 func (handler roomHandler) create(response http.ResponseWriter, request *http.Request) {
 	principal, ok := principalFromContext(request.Context())
 	if !ok {
@@ -117,6 +121,107 @@ func (handler roomHandler) join(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"room": joined})
+}
+
+func (handler roomHandler) invitePreview(response http.ResponseWriter, request *http.Request) {
+	result, err := handler.service.InvitePreview(request.Context(), chi.URLParam(request, "token"))
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler roomHandler) joinInvite(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	var input joinRoomRequest
+	if err := decodeJSON(response, request, &input); err != nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_JSON", "Request body is invalid")
+		return
+	}
+	joined, err := handler.service.JoinInvite(request.Context(), principal.IdentityID, chi.URLParam(request, "token"), input.Secret)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"room": joined})
+}
+
+func (handler roomHandler) invites(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	result, err := handler.service.Invites(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"))
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler roomHandler) shareInvite(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	result, err := handler.service.ShareInvite(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"))
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler roomHandler) createInvite(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	var input createInviteRequest
+	if err := decodeJSON(response, request, &input); err != nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_JSON", "Request body is invalid")
+		return
+	}
+	result, err := handler.service.CreateInvite(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), input.Permission)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusCreated, result)
+}
+
+func (handler roomHandler) revokeInvite(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	if err := handler.service.RevokeInvite(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), chi.URLParam(request, "token")); err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (handler roomHandler) disableLegacyInvites(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	if err := handler.service.DisableLegacyInvites(request.Context(), principal.IdentityID, chi.URLParam(request, "slug")); err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
 }
 
 func (handler roomHandler) get(response http.ResponseWriter, request *http.Request) {
@@ -216,6 +321,20 @@ func (handler roomHandler) activity(response http.ResponseWriter, request *http.
 	writeJSON(response, http.StatusOK, map[string]any{"events": result})
 }
 
+func (handler roomHandler) recap(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	result, err := handler.service.Recap(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"))
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
 func (handler roomHandler) update(response http.ResponseWriter, request *http.Request) {
 	principal, ok := principalFromContext(request.Context())
 	if !ok {
@@ -293,6 +412,8 @@ func (handler roomHandler) writeError(response http.ResponseWriter, request *htt
 		writeAPIError(response, request, http.StatusUnprocessableEntity, "VALIDATION_ERROR", err.Error())
 	case errors.Is(err, room.ErrNotFound):
 		writeAPIError(response, request, http.StatusNotFound, "ROOM_NOT_FOUND", "Room not found")
+	case errors.Is(err, room.ErrInviteNotFound):
+		writeAPIError(response, request, http.StatusNotFound, "INVITE_NOT_FOUND", "Invitation is invalid or has been revoked")
 	case errors.Is(err, room.ErrExpired):
 		writeAPIError(response, request, http.StatusGone, "ROOM_EXPIRED", "Room has expired")
 	case errors.Is(err, room.ErrAccessDenied):

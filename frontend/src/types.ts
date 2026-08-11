@@ -20,6 +20,7 @@ export interface Room {
   name: string
   access_mode: AccessMode
   role: 'owner' | 'member'
+  can_upload: boolean
   status: 'active' | 'deleting'
   accepting_uploads: boolean
   accepting_members: boolean
@@ -40,10 +41,29 @@ export interface RoomPreview {
   expires_at: string
 }
 
+export interface RoomInvitePreview extends RoomPreview {
+  permission: 'contributor' | 'viewer'
+}
+
+export interface RoomInvite {
+  token: string
+  permission: 'contributor' | 'viewer'
+  created_at: string
+  revoked_at?: string
+  last_used_at?: string
+  join_count: number
+}
+
+export interface RoomInviteList {
+  invites: RoomInvite[]
+  legacy_invites_enabled: boolean
+}
+
 export interface RoomMember {
   id: string
   display_name: string
   role: 'owner' | 'member'
+  can_upload: boolean
   joined_at: string
   last_seen_at: string
 }
@@ -142,4 +162,16 @@ export interface RoomArchive {
 export interface RoomNotificationSettings {
   telegram_available: boolean
   telegram_enabled: boolean
+}
+
+export interface RoomRecap {
+  media_count: number
+  image_count: number
+  video_count: number
+  member_count: number
+  contributor_count: number
+  favorite_count: number
+  total_bytes: number
+  created_at: string
+  expires_at: string
 }

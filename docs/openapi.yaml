@@ -305,6 +305,130 @@ paths:
         '410': {$ref: '#/components/responses/Gone'}
         '429': {$ref: '#/components/responses/RateLimited'}
 
+  /invites/{token}/preview:
+    get:
+      operationId: getManagedInvitePreview
+      tags: [Rooms]
+      summary: Preview a revocable room invitation
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/InviteToken'
+      responses:
+        '200':
+          description: Invitation and room preview
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomInvitePreview'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Gone'}
+
+  /invites/{token}/join:
+    post:
+      operationId: joinRoomByManagedInvite
+      tags: [Rooms]
+      summary: Join with the permission carried by a managed invitation
+      parameters:
+        - $ref: '#/components/parameters/InviteToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                secret: {type: string}
+      responses:
+        '200':
+          description: Room membership created, retained, or upgraded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [room]
+                properties:
+                  room: {$ref: '#/components/schemas/Room'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '410': {$ref: '#/components/responses/Gone'}
+
+  /rooms/{slug}/invites:
+    get:
+      operationId: listManagedInvites
+      tags: [Rooms]
+      summary: List managed invitations as the room owner
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      responses:
+        '200':
+          description: Invitation management state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomInviteList'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createManagedInvite
+      tags: [Rooms]
+      summary: Create a contributor or view-only invitation as the owner
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [permission]
+              properties:
+                permission: {type: string, enum: [contributor, viewer]}
+      responses:
+        '201':
+          description: Invitation created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomInvite'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /rooms/{slug}/share-invite:
+    get:
+      operationId: getCurrentShareInvite
+      tags: [Rooms]
+      summary: Get the active contributor invitation as a room member
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      responses:
+        '200':
+          description: Current contributor invitation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomInvite'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /rooms/{slug}/invites/{token}:
+    delete:
+      operationId: revokeManagedInvite
+      tags: [Rooms]
+      summary: Permanently revoke an invitation as the room owner
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - $ref: '#/components/parameters/InviteToken'
+      responses:
+        '204': {description: Invitation revoked}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /rooms/{slug}/legacy-invite:
+    delete:
+      operationId: disableLegacyRoomInvite
+      tags: [Rooms]
+      summary: Permanently disable new joins through the room-code link
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      responses:
+        '204': {description: Legacy link disabled}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
   /rooms/{slug}:
     parameters:
       - $ref: '#/components/parameters/RoomSlug'
@@ -466,6 +590,45 @@ paths:
                   events:
                     type: array
                     items: {$ref: '#/components/schemas/RoomActivityEvent'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /rooms/{slug}/recap:
+    get:
+      operationId: getRoomRecap
+      tags: [Rooms]
+      summary: Get full-room event totals as an active member
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      responses:
+        '200':
+          description: Event recap totals
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomRecap'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /rooms/{slug}/highlights:
+    get:
+      operationId: getRoomHighlights
+      tags: [Media]
+      summary: Get up to twelve server-ranked highlights across the room
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      responses:
+        '200':
+          description: Gallery items ranked by favorites and recency
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 12
+                    items: {$ref: '#/components/schemas/GalleryItem'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
 
@@ -804,6 +967,11 @@ components:
       in: path
       required: true
       schema: {type: string, minLength: 6, maxLength: 12, pattern: '^[A-Z0-9]+$'}
+    InviteToken:
+      name: token
+      in: path
+      required: true
+      schema: {type: string, minLength: 43, maxLength: 43}
     UploadID:
       name: uploadID
       in: path
@@ -967,19 +1135,23 @@ components:
       properties:
         name: {type: string, minLength: 1, maxLength: 120}
         accepting_uploads: {type: boolean}
+        accepting_members: {type: boolean}
+        lifetime_days: {type: integer, enum: [1, 2, 3]}
         access: {$ref: '#/components/schemas/RoomAccess'}
 
     Room:
       type: object
-      required: [id, slug, name, access_mode, role, status, accepting_uploads, max_files, max_storage_bytes, used_files, used_storage_bytes, created_at, expires_at]
+      required: [id, slug, name, access_mode, role, can_upload, status, accepting_uploads, accepting_members, max_files, max_storage_bytes, used_files, used_storage_bytes, created_at, expires_at]
       properties:
         id: {type: string, format: uuid}
         slug: {type: string}
         name: {type: string}
         access_mode: {type: string, enum: [public, pin, password]}
         role: {type: string, enum: [owner, member]}
+        can_upload: {type: boolean, description: Effective upload permission for the current identity}
         status: {type: string, enum: [active, deleting]}
         accepting_uploads: {type: boolean}
+        accepting_members: {type: boolean}
         max_files: {type: integer}
         max_storage_bytes: {type: integer, format: int64}
         used_files: {type: integer}
@@ -989,21 +1161,65 @@ components:
 
     RoomPreview:
       type: object
-      required: [slug, name, access_mode, status, expires_at]
+      required: [slug, name, access_mode, status, accepting_members, expires_at]
       properties:
         slug: {type: string}
         name: {type: string}
         access_mode: {type: string, enum: [public, pin, password]}
         status: {type: string}
+        accepting_members: {type: boolean}
+        expires_at: {type: string, format: date-time}
+
+    RoomInvitePreview:
+      allOf:
+        - $ref: '#/components/schemas/RoomPreview'
+        - type: object
+          required: [permission]
+          properties:
+            permission: {type: string, enum: [contributor, viewer]}
+
+    RoomInvite:
+      type: object
+      required: [token, permission, created_at, join_count]
+      properties:
+        token: {type: string, minLength: 43, maxLength: 43}
+        permission: {type: string, enum: [contributor, viewer]}
+        created_at: {type: string, format: date-time}
+        revoked_at: {type: [string, 'null'], format: date-time}
+        last_used_at: {type: [string, 'null'], format: date-time}
+        join_count: {type: integer, minimum: 0}
+
+    RoomInviteList:
+      type: object
+      required: [invites, legacy_invites_enabled]
+      properties:
+        invites:
+          type: array
+          items: {$ref: '#/components/schemas/RoomInvite'}
+        legacy_invites_enabled: {type: boolean}
+
+    RoomRecap:
+      type: object
+      required: [media_count, image_count, video_count, member_count, contributor_count, favorite_count, total_bytes, created_at, expires_at]
+      properties:
+        media_count: {type: integer, minimum: 0}
+        image_count: {type: integer, minimum: 0}
+        video_count: {type: integer, minimum: 0}
+        member_count: {type: integer, minimum: 1}
+        contributor_count: {type: integer, minimum: 0}
+        favorite_count: {type: integer, minimum: 0}
+        total_bytes: {type: integer, format: int64, minimum: 0}
+        created_at: {type: string, format: date-time}
         expires_at: {type: string, format: date-time}
 
     RoomMember:
       type: object
-      required: [id, display_name, role, joined_at, last_seen_at]
+      required: [id, display_name, role, can_upload, joined_at, last_seen_at]
       properties:
         id: {type: string, format: uuid}
         display_name: {type: string}
         role: {type: string, enum: [owner, member]}
+        can_upload: {type: boolean}
         joined_at: {type: string, format: date-time}
         last_seen_at: {type: string, format: date-time}
 

@@ -35,6 +35,7 @@ var (
 	ErrRoomExpired           = errors.New("room expired")
 	ErrNotMember             = errors.New("identity is not a room member")
 	ErrUploadsClosed         = errors.New("room uploads are closed")
+	ErrUploadPermission      = errors.New("room member cannot upload")
 	ErrRoomLimitReached      = errors.New("room storage limit reached")
 	ErrUploadNotFound        = errors.New("upload not found")
 	ErrUploadExpired         = errors.New("upload expired")
@@ -530,11 +531,12 @@ func lockRoomForUpload(ctx context.Context, tx pgx.Tx, identityID uuid.UUID, slu
 	var roomID uuid.UUID
 	var status string
 	var accepting bool
+	var canUpload bool
 	var expiresAt time.Time
 	var maxFiles, usedFiles, reservedFiles int
 	var maxBytes, usedBytes, reservedBytes int64
 	err := tx.QueryRow(ctx, `
-		SELECT r.id, r.status, r.accepting_uploads, r.expires_at,
+		SELECT r.id, r.status, r.accepting_uploads, rm.can_upload, r.expires_at,
 		       r.max_files, r.used_files, r.reserved_files,
 		       r.max_storage_bytes, r.used_storage_bytes, r.reserved_storage_bytes
 		FROM rooms r
@@ -542,7 +544,7 @@ func lockRoomForUpload(ctx context.Context, tx pgx.Tx, identityID uuid.UUID, slu
 		WHERE r.slug = upper(trim($2))
 		FOR UPDATE OF r
 	`, identityID, slug).Scan(
-		&roomID, &status, &accepting, &expiresAt,
+		&roomID, &status, &accepting, &canUpload, &expiresAt,
 		&maxFiles, &usedFiles, &reservedFiles,
 		&maxBytes, &usedBytes, &reservedBytes,
 	)
@@ -564,6 +566,9 @@ func lockRoomForUpload(ctx context.Context, tx pgx.Tx, identityID uuid.UUID, slu
 	}
 	if !accepting {
 		return uuid.Nil, time.Time{}, ErrUploadsClosed
+	}
+	if !canUpload {
+		return uuid.Nil, time.Time{}, ErrUploadPermission
 	}
 	if usedFiles+reservedFiles+1 > maxFiles || usedBytes+reservedBytes+size > maxBytes {
 		return uuid.Nil, time.Time{}, ErrRoomLimitReached

@@ -27,6 +27,7 @@ var (
 	ErrMemberNotFound      = errors.New("room member not found")
 	ErrMemberBlocked       = errors.New("identity is blocked from this room")
 	ErrJoiningClosed       = errors.New("room is closed to new members")
+	ErrInviteNotFound      = errors.New("room invitation not found")
 	ErrCannotRemoveOwner   = errors.New("room owner cannot be removed")
 	ErrMemberNotBlocked    = errors.New("room member is not blocked")
 	ErrIdempotencyConflict = errors.New("idempotency key was already used with different input")
@@ -65,6 +66,7 @@ type Room struct {
 	Name             string    `json:"name"`
 	AccessMode       string    `json:"access_mode"`
 	Role             string    `json:"role"`
+	CanUpload        bool      `json:"can_upload"`
 	Status           string    `json:"status"`
 	AcceptingUploads bool      `json:"accepting_uploads"`
 	AcceptingMembers bool      `json:"accepting_members"`
@@ -89,6 +91,7 @@ type Member struct {
 	ID          uuid.UUID `json:"id"`
 	DisplayName string    `json:"display_name"`
 	Role        string    `json:"role"`
+	CanUpload   bool      `json:"can_upload"`
 	JoinedAt    time.Time `json:"joined_at"`
 	LastSeenAt  time.Time `json:"last_seen_at"`
 }
@@ -207,11 +210,12 @@ func (s *Service) Create(ctx context.Context, ownerID, idempotencyKey uuid.UUID,
 
 func (s *Service) Preview(ctx context.Context, slug string) (Preview, error) {
 	var preview Preview
+	var legacyInvitesEnabled bool
 	err := s.db.QueryRow(ctx, `
-		SELECT slug, name, access_mode, status, accepting_members, expires_at
+		SELECT slug, name, access_mode, status, accepting_members, expires_at, legacy_invites_enabled
 		FROM rooms
 		WHERE slug = $1
-	`, normalizeSlug(slug)).Scan(&preview.Slug, &preview.Name, &preview.AccessMode, &preview.Status, &preview.AcceptingMembers, &preview.ExpiresAt)
+	`, normalizeSlug(slug)).Scan(&preview.Slug, &preview.Name, &preview.AccessMode, &preview.Status, &preview.AcceptingMembers, &preview.ExpiresAt, &legacyInvitesEnabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Preview{}, ErrNotFound
 	}
@@ -221,12 +225,15 @@ func (s *Service) Preview(ctx context.Context, slug string) (Preview, error) {
 	if preview.Status != "active" || !preview.ExpiresAt.After(s.now()) {
 		return Preview{}, ErrExpired
 	}
+	if !legacyInvitesEnabled {
+		return Preview{}, ErrInviteNotFound
+	}
 	return preview, nil
 }
 
 func (s *Service) List(ctx context.Context, identityID uuid.UUID) ([]Room, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT r.id, r.slug, r.name, r.access_mode, rm.role, r.status,
+		SELECT r.id, r.slug, r.name, r.access_mode, rm.role, rm.can_upload, r.status,
 		       r.accepting_uploads, r.accepting_members, r.max_files, r.max_storage_bytes,
 		       r.used_files, r.used_storage_bytes, r.created_at, r.expires_at
 		FROM room_members rm
@@ -246,7 +253,7 @@ func (s *Service) List(ctx context.Context, identityID uuid.UUID) ([]Room, error
 	for rows.Next() {
 		var item Room
 		if err := rows.Scan(
-			&item.ID, &item.Slug, &item.Name, &item.AccessMode, &item.Role, &item.Status,
+			&item.ID, &item.Slug, &item.Name, &item.AccessMode, &item.Role, &item.CanUpload, &item.Status,
 			&item.AcceptingUploads, &item.AcceptingMembers, &item.MaxFiles, &item.MaxStorageBytes,
 			&item.UsedFiles, &item.UsedStorageBytes, &item.CreatedAt, &item.ExpiresAt,
 		); err != nil {
@@ -270,7 +277,7 @@ func (s *Service) Members(ctx context.Context, identityID uuid.UUID, slug string
 	}
 
 	rows, err := s.db.Query(ctx, `
-		SELECT i.id, i.display_name, rm.role, rm.joined_at, rm.last_seen_at
+		SELECT i.id, i.display_name, rm.role, rm.can_upload, rm.joined_at, rm.last_seen_at
 		FROM room_members rm
 		JOIN identities i ON i.id = rm.identity_id
 		WHERE rm.room_id = $1
@@ -283,7 +290,7 @@ func (s *Service) Members(ctx context.Context, identityID uuid.UUID, slug string
 	members := make([]Member, 0)
 	for rows.Next() {
 		var member Member
-		if err := rows.Scan(&member.ID, &member.DisplayName, &member.Role, &member.JoinedAt, &member.LastSeenAt); err != nil {
+		if err := rows.Scan(&member.ID, &member.DisplayName, &member.Role, &member.CanUpload, &member.JoinedAt, &member.LastSeenAt); err != nil {
 			rows.Close()
 			return MembersResult{}, fmt.Errorf("scan room member: %w", err)
 		}
@@ -322,6 +329,10 @@ func (s *Service) Members(ctx context.Context, identityID uuid.UUID, slug string
 }
 
 func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret string) (Room, error) {
+	return s.join(ctx, identityID, slug, secret, "")
+}
+
+func (s *Service) join(ctx context.Context, identityID uuid.UUID, slug, secret, inviteToken string) (Room, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return Room{}, fmt.Errorf("begin join room transaction: %w", err)
@@ -333,12 +344,13 @@ func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret s
 	var secretHash *string
 	var expiresAt time.Time
 	var acceptingMembers bool
+	var legacyInvitesEnabled bool
 	err = tx.QueryRow(ctx, `
-		SELECT id, access_mode, access_secret_hash, status, accepting_members, expires_at
+		SELECT id, access_mode, access_secret_hash, status, accepting_members, expires_at, legacy_invites_enabled
 		FROM rooms
 		WHERE slug = $1
 		FOR UPDATE
-	`, normalizeSlug(slug)).Scan(&roomID, &accessMode, &secretHash, &status, &acceptingMembers, &expiresAt)
+	`, normalizeSlug(slug)).Scan(&roomID, &accessMode, &secretHash, &status, &acceptingMembers, &expiresAt, &legacyInvitesEnabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
@@ -347,6 +359,26 @@ func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret s
 	}
 	if status != "active" || !expiresAt.After(s.now()) {
 		return Room{}, ErrExpired
+	}
+	canUpload := true
+	if inviteToken == "" {
+		if !legacyInvitesEnabled {
+			return Room{}, ErrInviteNotFound
+		}
+	} else {
+		var permission string
+		err := tx.QueryRow(ctx, `
+			SELECT permission FROM room_invites
+			WHERE token = $1 AND room_id = $2 AND revoked_at IS NULL
+			FOR SHARE
+		`, inviteToken, roomID).Scan(&permission)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Room{}, ErrInviteNotFound
+		}
+		if err != nil {
+			return Room{}, fmt.Errorf("validate room invitation: %w", err)
+		}
+		canUpload = permission == "contributor"
 	}
 	var blocked bool
 	if err := tx.QueryRow(ctx, `
@@ -384,11 +416,11 @@ func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret s
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO room_members (room_id, identity_id, role)
-		VALUES ($1, $2, 'member')
+		INSERT INTO room_members (room_id, identity_id, role, can_upload)
+		VALUES ($1, $2, 'member', $3)
 		ON CONFLICT (room_id, identity_id)
-		DO UPDATE SET last_seen_at = now()
-	`, roomID, identityID); err != nil {
+		DO UPDATE SET last_seen_at = now(), can_upload = room_members.can_upload OR EXCLUDED.can_upload
+	`, roomID, identityID, canUpload); err != nil {
 		return Room{}, fmt.Errorf("join room: %w", err)
 	}
 	if !alreadyMember {
@@ -412,20 +444,23 @@ func (s *Service) Join(ctx context.Context, identityID uuid.UUID, slug, secret s
 	if err := tx.Commit(ctx); err != nil {
 		return Room{}, fmt.Errorf("commit room join: %w", err)
 	}
+	if inviteToken != "" {
+		_, _ = s.db.Exec(ctx, `UPDATE room_invites SET last_used_at = now(), join_count = join_count + 1 WHERE token = $1 AND revoked_at IS NULL`, inviteToken)
+	}
 	return s.Get(ctx, identityID, slug)
 }
 
 func (s *Service) Get(ctx context.Context, identityID uuid.UUID, slug string) (Room, error) {
 	var result Room
 	err := s.db.QueryRow(ctx, `
-		SELECT r.id, r.slug, r.name, r.access_mode, rm.role, r.status,
+		SELECT r.id, r.slug, r.name, r.access_mode, rm.role, rm.can_upload, r.status,
 		       r.accepting_uploads, r.accepting_members, r.max_files, r.max_storage_bytes,
 		       r.used_files, r.used_storage_bytes, r.created_at, r.expires_at
 		FROM rooms r
 		JOIN room_members rm ON rm.room_id = r.id AND rm.identity_id = $1
 		WHERE r.slug = $2
 	`, identityID, normalizeSlug(slug)).Scan(
-		&result.ID, &result.Slug, &result.Name, &result.AccessMode, &result.Role, &result.Status,
+		&result.ID, &result.Slug, &result.Name, &result.AccessMode, &result.Role, &result.CanUpload, &result.Status,
 		&result.AcceptingUploads, &result.AcceptingMembers, &result.MaxFiles, &result.MaxStorageBytes,
 		&result.UsedFiles, &result.UsedStorageBytes, &result.CreatedAt, &result.ExpiresAt,
 	)
@@ -934,14 +969,14 @@ func existingIdempotentRoom(ctx context.Context, tx pgx.Tx, identityID, key uuid
 	}
 	var result Room
 	err := tx.QueryRow(ctx, `
-		SELECT r.id, r.slug, r.name, r.access_mode, rm.role, r.status,
+		SELECT r.id, r.slug, r.name, r.access_mode, rm.role, rm.can_upload, r.status,
 		       r.accepting_uploads, r.accepting_members, r.max_files, r.max_storage_bytes,
 		       r.used_files, r.used_storage_bytes, r.created_at, r.expires_at
 		FROM rooms r
 		JOIN room_members rm ON rm.room_id = r.id AND rm.identity_id = $1
 		WHERE r.id = $2
 	`, identityID, roomID).Scan(
-		&result.ID, &result.Slug, &result.Name, &result.AccessMode, &result.Role, &result.Status,
+		&result.ID, &result.Slug, &result.Name, &result.AccessMode, &result.Role, &result.CanUpload, &result.Status,
 		&result.AcceptingUploads, &result.AcceptingMembers, &result.MaxFiles, &result.MaxStorageBytes,
 		&result.UsedFiles, &result.UsedStorageBytes, &result.CreatedAt, &result.ExpiresAt,
 	)
@@ -954,6 +989,7 @@ func existingIdempotentRoom(ctx context.Context, tx pgx.Tx, identityID, key uuid
 func insertRoom(ctx context.Context, tx pgx.Tx, slug string, ownerID uuid.UUID, input CreateInput, secretHash *string, createdAt, expiresAt time.Time) (Room, error) {
 	var result Room
 	result.Role = "owner"
+	result.CanUpload = true
 	err := tx.QueryRow(ctx, `
 		INSERT INTO rooms (
 			slug, name, owner_identity_id, access_mode, access_secret_hash, created_at, expires_at

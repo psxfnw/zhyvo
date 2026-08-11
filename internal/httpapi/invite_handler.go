@@ -38,8 +38,15 @@ var invitePage = template.Must(template.New("invite").Parse(`<!doctype html>
 </html>`))
 
 func (handler inviteHandler) show(response http.ResponseWriter, request *http.Request) {
-	preview, err := handler.rooms.Preview(request.Context(), chi.URLParam(request, "slug"))
-	if errors.Is(err, room.ErrNotFound) || errors.Is(err, room.ErrExpired) {
+	token := chi.URLParam(request, "slug")
+	preview, err := handler.rooms.Preview(request.Context(), token)
+	startParam := "room_"
+	if len(token) > 12 {
+		managed, managedErr := handler.rooms.InvitePreview(request.Context(), token)
+		preview, err = managed.Preview, managedErr
+		startParam = "invite_"
+	}
+	if errors.Is(err, room.ErrNotFound) || errors.Is(err, room.ErrInviteNotFound) || errors.Is(err, room.ErrExpired) {
 		http.NotFound(response, request)
 		return
 	}
@@ -56,7 +63,7 @@ func (handler inviteHandler) show(response http.ResponseWriter, request *http.Re
 	}
 	origin := proto + "://" + request.Host
 	bot := strings.TrimPrefix(handler.botUsername, "@")
-	telegramURL := "https://t.me/" + bot + "?startapp=room_" + preview.Slug
+	telegramURL := "https://t.me/" + bot + "?startapp=" + startParam + token
 	data := struct {
 		RoomName     string
 		Origin       string

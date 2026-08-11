@@ -57,6 +57,11 @@ function applyTelegramStartRoute(startParam: string) {
 		history.replaceState(history.state, '', `/auth/telegram/link-confirm?token=${encodeURIComponent(linkToken)}`)
 		return
 	}
+  const inviteToken = startParam.match(/^invite_([A-Za-z0-9_-]{43})$/)?.[1]
+  if (location.pathname === '/' && inviteToken) {
+    history.replaceState(history.state, '', `/i/${encodeURIComponent(inviteToken)}`)
+    return
+  }
   const slug = startParam.replace(/^room[_-]/i, '').toUpperCase()
   if (location.pathname === '/' && /^[A-Z0-9]{6,12}$/.test(slug)) {
     history.replaceState(history.state, '', `/r/${slug}`)
@@ -122,12 +127,24 @@ export function telegramRoomLink(slug: string) {
   return `https://t.me/${TELEGRAM_BOT_USERNAME}?startapp=room_${slug.toUpperCase()}`
 }
 
+export function telegramInviteLink(token: string) {
+  return `https://t.me/${TELEGRAM_BOT_USERNAME}?startapp=invite_${token}`
+}
+
 export function telegramBrowserLink(token: string) {
   return `https://t.me/${TELEGRAM_BOT_USERNAME}?startapp=link_${token}`
 }
 
 export function roomInviteLink(slug: string) {
   return `${window.location.origin}/invite/${slug.toUpperCase()}`
+}
+
+export function managedInviteLink(token: string) {
+  return `${window.location.origin}/invite/${token}`
+}
+
+export function managedBrowserInviteLink(token: string) {
+  return `${window.location.origin}/i/${token}`
 }
 
 export function telegramShareLink(roomName: string, roomURL: string) {

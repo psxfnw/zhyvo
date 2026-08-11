@@ -29,6 +29,7 @@ This changes name resolution only inside the launched test browser and does not 
 - Create a room, leave it, and confirm it remains under `Мої кімнати`.
 - Join from a second Telegram account and confirm the room opens directly.
 - Upload several photos, one video, and—when available—an HEIC photo.
+- Upload the same bytes under another filename and confirm Zhyvo reports `Вже є в галереї` without increasing room storage.
 - Confirm thumbnails have the right orientation and a video shows its duration.
 - Add favorites from two accounts, verify the shared count, and open `Обрані` and `Найкращі`.
 - As the owner, set an image as the room cover; confirm a regular member cannot replace it.

@@ -2,6 +2,7 @@ package media
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -20,6 +21,8 @@ func TestValidateInitiate(t *testing.T) {
 		{name: "unsupported type", input: InitiateInput{Filename: "file.exe", MIMEType: "application/octet-stream", SizeBytes: 1024}, wantError: true},
 		{name: "oversized image", input: InitiateInput{Filename: "huge.jpg", MIMEType: "image/jpeg", SizeBytes: maxImageSize + 1}, wantError: true},
 		{name: "oversized video", input: InitiateInput{Filename: "huge.mp4", MIMEType: "video/mp4", SizeBytes: maxVideoSize + 1}, wantError: true},
+		{name: "valid checksum", input: InitiateInput{Filename: "photo.jpg", MIMEType: "image/jpeg", SizeBytes: 1024, Checksum: strings.Repeat("A1", 32)}, wantType: "image", wantMIME: "image/jpeg"},
+		{name: "invalid checksum", input: InitiateInput{Filename: "photo.jpg", MIMEType: "image/jpeg", SizeBytes: 1024, Checksum: "not-sha256"}, wantError: true},
 	}
 
 	for _, test := range tests {
@@ -36,6 +39,9 @@ func TestValidateInitiate(t *testing.T) {
 			}
 			if mediaType != test.wantType || normalized.MIMEType != test.wantMIME {
 				t.Fatalf("validateInitiate() = (%q, %q), want (%q, %q)", mediaType, normalized.MIMEType, test.wantType, test.wantMIME)
+			}
+			if test.name == "valid checksum" && normalized.Checksum != strings.ToLower(test.input.Checksum) {
+				t.Fatalf("checksum was not normalized: %q", normalized.Checksum)
 			}
 		})
 	}

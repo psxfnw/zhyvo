@@ -20,6 +20,7 @@ type initiateUploadRequest struct {
 	MIMEType   string     `json:"mime_type"`
 	SizeBytes  int64      `json:"size_bytes"`
 	CapturedAt *time.Time `json:"captured_at"`
+	Checksum   string     `json:"checksum"`
 }
 
 type partURLsRequest struct {
@@ -52,7 +53,7 @@ func (handler uploadHandler) initiate(response http.ResponseWriter, request *htt
 	}
 
 	upload, err := handler.service.Initiate(request.Context(), principal.IdentityID, idempotencyKey, chi.URLParam(request, "slug"), media.InitiateInput{
-		Filename: input.Filename, MIMEType: input.MIMEType, SizeBytes: input.SizeBytes, CapturedAt: input.CapturedAt,
+		Filename: input.Filename, MIMEType: input.MIMEType, SizeBytes: input.SizeBytes, CapturedAt: input.CapturedAt, Checksum: input.Checksum,
 	})
 	if err != nil {
 		handler.writeError(response, request, err)
@@ -258,6 +259,8 @@ func (handler uploadHandler) writeError(response http.ResponseWriter, request *h
 		writeAPIError(response, request, http.StatusForbidden, "ROOM_OWNER_REQUIRED", "Only the room owner can perform this action")
 	case errors.Is(err, media.ErrMediaAccessDenied):
 		writeAPIError(response, request, http.StatusForbidden, "MEDIA_DELETE_FORBIDDEN", "Only the uploader or room owner can delete this media")
+	case errors.Is(err, media.ErrMediaDuplicate):
+		writeAPIError(response, request, http.StatusConflict, "MEDIA_DUPLICATE", "This file is already in the room")
 	default:
 		writeAPIError(response, request, http.StatusBadGateway, "STORAGE_ERROR", "Object storage operation failed")
 	}

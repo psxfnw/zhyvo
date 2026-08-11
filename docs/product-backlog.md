@@ -30,7 +30,11 @@ Status: implemented in the preview.
 
 The mobile-first queue uploads two files concurrently, retries transient API and object-storage failures with exponential backoff, waits for the network to return, persists multipart checkpoints, and supports pause, resume, cancel, and cross-reload file recovery. It shows byte-weighted overall progress and rejects unsupported media, files over 2 GiB, and duplicate name/size pairs already present in the active queue.
 
-Future duplicate detection across completed gallery items should use a client-computed checksum rather than filename metadata.
+## Content-based duplicate prevention
+
+Status: implemented in preview.
+
+The browser calculates SHA-256 in a dedicated Web Worker using bounded 8 MiB chunks. The API checks the digest while holding the room upload lock, and PostgreSQL enforces a partial unique index for active media. Identical bytes are rejected before any object-storage PUT even when filenames differ. A paused upload reuses its digest; after a reload, the reselected file is hashed again and must match the stored digest before multipart upload can resume.
 
 ## Download all media
 
@@ -73,8 +77,6 @@ The thumbnail worker uses FFmpeg/FFprobe with explicit autorotation, bounded pro
 
 These are intentionally not part of the current MVP release gate:
 
-1. Client-computed content hashes for duplicate detection across finished uploads.
-2. Native Photo Library / Files integration after the Capacitor wrapper is introduced.
-3. Lightweight reactions or favorites for choosing the best event photos without turning rooms into a social feed.
-4. Owner-configurable room cover generated from an existing gallery photo.
-5. Storage and upload analytics before paid plans or larger limits are introduced.
+1. Native Photo Library / Files integration after the Capacitor wrapper is introduced.
+2. Storage and upload analytics before paid plans or larger limits are introduced.
+3. Server-side paginated ranking once rooms regularly exceed the first 50 loaded media items.

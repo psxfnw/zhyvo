@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"photodrop/internal/objectstore"
 )
@@ -42,6 +44,7 @@ var (
 	ErrMediaNotFound        = errors.New("media not found")
 	ErrMediaAccessDenied    = errors.New("media access denied")
 	ErrRoomOwnerRequired    = errors.New("room owner required")
+	ErrMediaDuplicate       = errors.New("media already exists in room")
 	ErrInvalidUploadParts   = errors.New("invalid upload parts")
 	ErrUploadedSizeMismatch = errors.New("uploaded object size does not match declared size")
 	ErrIdempotencyConflict  = errors.New("idempotency key was already used with different input")
@@ -84,6 +87,7 @@ type InitiateInput struct {
 	MIMEType   string
 	SizeBytes  int64
 	CapturedAt *time.Time
+	Checksum   string
 }
 
 type Upload struct {
@@ -159,6 +163,21 @@ func (s *Service) Initiate(ctx context.Context, identityID, idempotencyKey uuid.
 	if err != nil {
 		return Upload{}, err
 	}
+	if input.Checksum != "" {
+		var duplicate bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM media
+				WHERE room_id = $1 AND checksum = $2
+				  AND status IN ('pending', 'processing', 'ready')
+			)
+		`, roomID, input.Checksum).Scan(&duplicate); err != nil {
+			return Upload{}, fmt.Errorf("check duplicate media: %w", err)
+		}
+		if duplicate {
+			return Upload{}, ErrMediaDuplicate
+		}
+	}
 	now := s.now().UTC()
 	sessionExpiry := now.Add(uploadLifetime)
 	if roomExpiry.Before(sessionExpiry) {
@@ -195,10 +214,14 @@ func (s *Service) Initiate(ctx context.Context, identityID, idempotencyKey uuid.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO media (
 			id, room_id, uploader_identity_id, status, media_type, original_filename,
-			mime_type, size_bytes, storage_key, captured_at, created_at
+			mime_type, size_bytes, storage_key, captured_at, checksum, created_at
 		)
-		VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10)
-	`, mediaID, roomID, identityID, mediaType, input.Filename, input.MIMEType, input.SizeBytes, objectKey, input.CapturedAt, now); err != nil {
+		VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, NULLIF($10, ''), $11)
+	`, mediaID, roomID, identityID, mediaType, input.Filename, input.MIMEType, input.SizeBytes, objectKey, input.CapturedAt, input.Checksum, now); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.ConstraintName == "media_room_checksum_active_uidx" {
+			return Upload{}, ErrMediaDuplicate
+		}
 		return Upload{}, fmt.Errorf("create media metadata: %w", err)
 	}
 
@@ -571,6 +594,13 @@ func validateInitiate(input InitiateInput) (string, InitiateInput, error) {
 	if mediaType == "video" && input.SizeBytes > maxVideoSize {
 		return "", InitiateInput{}, fmt.Errorf("%w: video exceeds 2 GiB", ErrInvalidInput)
 	}
+	input.Checksum = strings.ToLower(strings.TrimSpace(input.Checksum))
+	if input.Checksum != "" {
+		decoded, err := hex.DecodeString(input.Checksum)
+		if err != nil || len(decoded) != sha256.Size {
+			return "", InitiateInput{}, fmt.Errorf("%w: checksum must be a SHA-256 hex digest", ErrInvalidInput)
+		}
+	}
 	return mediaType, input, nil
 }
 
@@ -579,7 +609,7 @@ func hashInitiateInput(slug string, input InitiateInput) [32]byte {
 	if input.CapturedAt != nil {
 		captured = input.CapturedAt.UTC().Format(time.RFC3339Nano)
 	}
-	canonical := fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%s", strings.ToUpper(strings.TrimSpace(slug)), input.Filename, input.MIMEType, input.SizeBytes, captured)
+	canonical := fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%s\x00%s", strings.ToUpper(strings.TrimSpace(slug)), input.Filename, input.MIMEType, input.SizeBytes, captured, input.Checksum)
 	return sha256.Sum256([]byte(canonical))
 }
 

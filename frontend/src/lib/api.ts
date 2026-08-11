@@ -191,11 +191,11 @@ export const media = {
   favorite: (id: string, enabled: boolean) => api<{ favorite_count: number; favorited: boolean }>(`/media/${id}/favorite`, { method: enabled ? 'PUT' : 'DELETE' }),
   setCover: (slug: string, id: string) => api<void>(`/rooms/${slug}/cover`, { method: 'PUT', body: JSON.stringify({ media_id: id }) }),
   remove: (id: string) => api<void>(`/media/${id}`, { method: 'DELETE' }),
-  initiate: (slug: string, file: File, signal?: AbortSignal, idempotencyKey: string = crypto.randomUUID(), mimeType = file.type, capturedAt?: string | null) => api<{ upload: UploadTicket; media_id: string }>(`/rooms/${slug}/uploads`, {
+  initiate: (slug: string, file: File, signal?: AbortSignal, idempotencyKey: string = crypto.randomUUID(), mimeType = file.type, capturedAt?: string | null, checksum?: string) => api<{ upload: UploadTicket; media_id: string }>(`/rooms/${slug}/uploads`, {
     method: 'POST',
     signal,
     headers: { 'Idempotency-Key': idempotencyKey },
-    body: JSON.stringify({ filename: file.name, mime_type: mimeType, size_bytes: file.size, captured_at: capturedAt ?? null }),
+    body: JSON.stringify({ filename: file.name, mime_type: mimeType, size_bytes: file.size, captured_at: capturedAt ?? null, checksum }),
   }),
   partURLs: (uploadID: string, partNumbers: number[], signal?: AbortSignal) => api<{ parts: Array<{ part_number: number; url: string }> }>(`/uploads/${uploadID}/parts`, {
     method: 'POST', signal, body: JSON.stringify({ part_numbers: partNumbers }),

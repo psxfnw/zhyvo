@@ -122,6 +122,19 @@ try {
     throw new Error(`Recovered upload did not finish: ${queueState}; browser errors: ${pageErrors.join('; ')}; requests: ${requestFailures.slice(-8).join('; ')}`, { cause })
   })
   await page.getByRole('button', { name: 'Приховати завершені' }).click()
+  let duplicateStoragePUTs = 0
+  const countDuplicateStoragePUT = (request) => {
+    if (request.method() === 'PUT' && request.url().includes('/photodrop-media/')) duplicateStoragePUTs += 1
+  }
+  page.on('request', countDuplicateStoragePUT)
+  const duplicateBytes = await readFile(resolve('public', 'pwa-64x64.png'))
+  await page.locator('input[type="file"]:not([data-resume-upload])').setInputFiles({ name: 'same-photo-renamed.png', mimeType: 'image/png', buffer: duplicateBytes })
+  await page.getByText('Вже є в галереї').waitFor({ timeout: 20_000 })
+  page.off('request', countDuplicateStoragePUT)
+  if (duplicateStoragePUTs !== 0) throw new Error(`Duplicate uploaded ${duplicateStoragePUTs} object-storage requests`)
+  const deduplicatedGallery = await json(`/rooms/${slug}/media?limit=50`, { headers: { Authorization: `Bearer ${auth.access_token}` } })
+  if (deduplicatedGallery.items.length !== 1) throw new Error(`Duplicate changed gallery size to ${deduplicatedGallery.items.length}`)
+  await page.getByRole('button', { name: 'Приховати завершені' }).click()
   let ownerGallery
   for (let attempt = 0; attempt < 30; attempt += 1) {
     ownerGallery = await json(`/rooms/${slug}/media?limit=50`, { headers: { Authorization: `Bearer ${auth.access_token}` } })
@@ -300,7 +313,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

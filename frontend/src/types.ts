@@ -113,6 +113,7 @@ export interface UploadProgress {
   upload_id?: string
   completed_parts?: Array<{ part_number: number; etag: string }>
   captured_at?: string | null
+  checksum?: string
   created_at: string
   progress: number
   state: 'queued' | 'uploading' | 'paused' | 'waiting_file' | 'done' | 'error'

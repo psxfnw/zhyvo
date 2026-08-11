@@ -41,6 +41,7 @@ import { getTelegramBootstrapError, getTelegramWebApp, openTelegramInvite, roomI
 import { uploadFile } from './lib/upload'
 import { loadUploadQueue, saveUploadQueue } from './lib/uploadQueue'
 import { mediaCapturedAt } from './lib/metadata'
+import { checksumFile } from './lib/checksum'
 import { completeTelegramLogin, startTelegramLogin } from './lib/telegramLogin'
 import type { AccessMode, BlockedRoomMember, GalleryItem, Room, RoomActivityEvent, RoomArchive, RoomMember, RoomNotificationSettings, RoomPreview, Session, UploadProgress } from './types'
 
@@ -551,7 +552,7 @@ function UploadQueue({ uploads, onCancel, onPause, onRetry, onClearCompleted }: 
       {uploads.map((item) => (
         <div className="upload-row" key={item.id}>
           <div>
-            <div><strong>{item.filename}</strong><span>{item.state === 'done' ? 'Готово' : item.state === 'error' ? item.message : item.message ?? `${item.progress}%`}</span></div>
+            <div><strong>{item.filename}</strong><span>{item.state === 'done' ? item.message ?? 'Готово' : item.state === 'error' ? item.message : item.message ?? `${item.progress}%`}</span></div>
             <div className="upload-actions">
               {item.state === 'uploading' && <button type="button" onClick={() => onPause(item.id)}><Pause size={15} /> Пауза</button>}
               {(item.state === 'paused' || item.state === 'error' || item.state === 'waiting_file') && item.canRetry && <button type="button" onClick={() => onRetry(item.id)}>{item.state === 'paused' ? <Play size={15} /> : <RefreshCw size={15} />} {item.state === 'waiting_file' ? 'Вибрати файл' : item.state === 'paused' ? 'Продовжити' : 'Повторити'}</button>}
@@ -1055,7 +1056,7 @@ function RoomPage() {
     return () => { document.body.style.overflow = previousOverflow }
   }, [membersOpen, selectedMediaID, settings, shareDialog])
 
-  const processUpload = useCallback(async (queueID: string, file: File, initialItem?: UploadProgress) => {
+  const processUpload = useCallback(async (queueID: string, file: File, initialItem?: UploadProgress, verifyStoredChecksum = false) => {
     const controller = uploadControllersRef.current.get(queueID) ?? new AbortController()
     uploadControllersRef.current.set(queueID, controller)
     if (controller.signal.aborted) return
@@ -1063,11 +1064,20 @@ function RoomPage() {
     if (!queueItem) return
     setUploads((current) => current.map((item) => item.id === queueID ? { ...item, state: 'uploading', message: undefined, canRetry: false } : item))
     try {
+      let checksum = queueItem.checksum
+      if (!checksum || verifyStoredChecksum) {
+        setUploads((current) => current.map((item) => item.id === queueID ? { ...item, message: 'Перевіряємо файл', progress: 0 } : item))
+        const calculated = await checksumFile(file, controller.signal, (progress) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, progress: Math.max(1, Math.round(progress / 10)) } : item)))
+        if (verifyStoredChecksum && checksum && calculated !== checksum) throw new Error('Це інший файл — його вміст не збігається')
+        checksum = calculated
+        setUploads((current) => current.map((item) => item.id === queueID ? { ...item, checksum } : item))
+      }
       await uploadFile(slug, file, {
         signal: controller.signal,
         idempotencyKey: queueItem.idempotency_key,
         mimeType: queueItem.mime_type,
         capturedAt: queueItem.captured_at,
+        checksum,
         completedParts: queueItem.completed_parts,
         onProgress: (progress) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, progress, message: undefined } : item)),
         onStatus: (message) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, message } : item)),
@@ -1082,13 +1092,16 @@ function RoomPage() {
       const cancelled = controller.signal.aborted
       const paused = cancelled && pausedUploadsRef.current.has(queueID)
       const sessionExpired = cause instanceof ApiError && ['UPLOAD_EXPIRED', 'UPLOAD_NOT_FOUND'].includes(cause.code)
+      const duplicate = cause instanceof ApiError && cause.code === 'MEDIA_DUPLICATE'
       setUploads((current) => current.map((item) => item.id === queueID ? {
         ...item,
-        state: paused ? 'paused' : 'error',
-        message: paused ? 'Призупинено' : cancelled ? 'Скасовано' : sessionExpired ? 'Сесія завершилася — почнемо файл заново' : errorMessage(cause),
-        canRetry: paused || !cancelled,
+        state: duplicate ? 'done' : paused ? 'paused' : 'error',
+        progress: duplicate ? 100 : item.progress,
+        message: duplicate ? 'Вже є в галереї' : paused ? 'Призупинено' : cancelled ? 'Скасовано' : sessionExpired ? 'Сесія завершилася — почнемо файл заново' : errorMessage(cause),
+        canRetry: duplicate ? false : paused || !cancelled,
         ...(sessionExpired ? { idempotency_key: uuid(), upload_id: undefined, completed_parts: [] } : {}),
       } : item))
+      if (duplicate) uploadFilesRef.current.delete(queueID)
       uploadControllersRef.current.delete(queueID)
     }
   }, [slug])
@@ -1198,7 +1211,7 @@ function RoomPage() {
     uploadControllersRef.current.set(id, new AbortController())
     const resumed = { ...item, state: 'queued' as const, message: undefined, canRetry: false }
     setUploads((current) => current.map((candidate) => candidate.id === id ? resumed : candidate))
-    void processUpload(id, file, resumed).then(async () => {
+    void processUpload(id, file, resumed, true).then(async () => {
       await refreshGallery().catch(() => undefined)
       const refreshedRoom = await rooms.get(slug).catch(() => null)
       if (refreshedRoom) setRoom(refreshedRoom.room)

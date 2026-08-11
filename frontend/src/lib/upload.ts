@@ -15,6 +15,7 @@ interface UploadOptions {
   idempotencyKey: string
   mimeType: string
   capturedAt?: string | null
+  checksum: string
   completedParts?: Array<{ part_number: number; etag: string }>
   onProgress: (value: number) => void
   onStatus?: (message: string) => void
@@ -128,7 +129,7 @@ async function uploadMultipart(ticket: UploadTicket, file: File, options: Upload
 }
 
 export async function uploadFile(slug: string, file: File, options: UploadOptions) {
-  const { upload } = await withRetry(() => media.initiate(slug, file, options.signal, options.idempotencyKey, options.mimeType, options.capturedAt), options)
+  const { upload } = await withRetry(() => media.initiate(slug, file, options.signal, options.idempotencyKey, options.mimeType, options.capturedAt, options.checksum), options)
   options.onCheckpoint?.({ uploadID: upload.id, completedParts: options.completedParts ?? [] })
   try {
     if (upload.type === 'single') await uploadSingle(upload, file, options)

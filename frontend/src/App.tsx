@@ -18,6 +18,7 @@ import {
   LogIn,
   Menu,
   Pause,
+  Pencil,
   Play,
   RefreshCw,
   RotateCcw,
@@ -606,7 +607,7 @@ function GalleryCard({ item, selectionMode, selected, onToggle, onDelete, onOpen
       </button>
       {!selectionMode && <button className={`favorite-button ${item.favorited ? 'is-active' : ''}`} type="button" disabled={favoriteBusy} aria-pressed={item.favorited} aria-label={`${item.favorited ? 'Прибрати з обраного' : 'Додати в обране'} ${item.original_filename}`} onClick={() => void toggleFavorite()}><Heart size={17} fill={item.favorited ? 'currentColor' : 'none'} /><span>{item.favorite_count}</span></button>}
       <div className="media-meta">
-        <div><strong title={item.original_filename}>{item.original_filename}</strong><span>{item.uploaded_by.display_name} · {bytes(item.size_bytes)}</span></div>
+        <div><strong title={item.caption ?? item.original_filename}>{item.caption || item.original_filename}</strong><span>{item.uploaded_by.display_name} · {bytes(item.size_bytes)}</span></div>
         <div className="media-actions">
           <button onClick={download} disabled={busy} aria-label={`Завантажити ${item.original_filename}`} title="Завантажити"><ArrowDownToLine size={18} /></button>
           {item.permissions.can_delete && <button onClick={() => onDelete(item)} aria-label={`Видалити ${item.original_filename}`} title="Видалити"><Trash2 size={18} /></button>}
@@ -797,7 +798,7 @@ function ShareDialog({ room, webURL, telegramURL, previewURL, onClose, onCopied 
   )
 }
 
-function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, onSetCover, onError }: {
+function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, onSetCover, onCaption, onError }: {
   item: GalleryItem
   items: GalleryItem[]
   canSetCover: boolean
@@ -805,6 +806,7 @@ function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, 
   onClose: () => void
   onFavorite: (item: GalleryItem) => Promise<void>
   onSetCover: (item: GalleryItem) => Promise<void>
+  onCaption: (item: GalleryItem, caption: string) => Promise<void>
   onError: (message: string) => void
 }) {
   const closeRef = useRef<HTMLButtonElement>(null)
@@ -812,10 +814,22 @@ function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, 
   const [loading, setLoading] = useState(true)
   const [favoriteBusy, setFavoriteBusy] = useState(false)
   const [coverBusy, setCoverBusy] = useState(false)
+  const [captionEditing, setCaptionEditing] = useState(false)
+  const [captionDraft, setCaptionDraft] = useState(item.caption ?? '')
+  const [captionBusy, setCaptionBusy] = useState(false)
+  const [captionError, setCaptionError] = useState('')
   const index = items.findIndex((candidate) => candidate.id === item.id)
   const previous = index > 0 ? items[index - 1] : null
   const next = index >= 0 && index < items.length - 1 ? items[index + 1] : null
   const heifPreview = isHEIFItem(item)
+  const format = item.mime_type.split('/').at(-1)?.toLocaleUpperCase('uk-UA') ?? item.mime_type
+  const dimensions = item.width && item.height ? `${item.width} × ${item.height}` : null
+
+  useEffect(() => {
+    setCaptionDraft(item.caption ?? '')
+    setCaptionEditing(false)
+    setCaptionError('')
+  }, [item.caption, item.id])
 
   useEffect(() => {
     let active = true
@@ -838,6 +852,25 @@ function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, 
     document.addEventListener('keydown', onKeyDown)
     return () => { document.removeEventListener('keydown', onKeyDown); previousFocus?.focus() }
   }, [next, onClose, onSelect, previous])
+
+  async function saveCaption(event: FormEvent) {
+    event.preventDefault()
+    const normalized = captionDraft.trim()
+    if (normalized === (item.caption ?? '')) {
+      setCaptionEditing(false)
+      return
+    }
+    setCaptionBusy(true)
+    setCaptionError('')
+    try {
+      await onCaption(item, normalized)
+      setCaptionEditing(false)
+    } catch (cause) {
+      setCaptionError(errorMessage(cause))
+    } finally {
+      setCaptionBusy(false)
+    }
+  }
 
   return (
     <div className="viewer" role="dialog" aria-modal="true" aria-labelledby="viewer-title">
@@ -863,7 +896,31 @@ function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, 
         {previous && <button className="viewer-nav viewer-nav--previous" onClick={() => onSelect(previous)} aria-label="Попередній файл"><ChevronLeft /></button>}
         {next && <button className="viewer-nav viewer-nav--next" onClick={() => onSelect(next)} aria-label="Наступний файл"><ChevronRight /></button>}
       </div>
-      <footer className="viewer-footer"><span>{index + 1} / {items.length}</span><span>{mediaDate(item).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })}</span></footer>
+      <footer className="viewer-info">
+        <div className="viewer-caption">
+          {captionEditing ? (
+            <form onSubmit={(event) => void saveCaption(event)}>
+              <label htmlFor={`caption-${item.id}`}>Підпис</label>
+              <textarea id={`caption-${item.id}`} autoFocus maxLength={300} rows={2} value={captionDraft} onChange={(event) => setCaptionDraft(event.target.value)} placeholder="Що відбувається на цьому кадрі?" />
+              <div><span>{captionDraft.length} / 300</span><button type="button" onClick={() => { setCaptionDraft(item.caption ?? ''); setCaptionEditing(false); setCaptionError('') }}>Скасувати</button><button type="submit" disabled={captionBusy}>{captionBusy ? 'Зберігаємо…' : 'Зберегти'}</button></div>
+              {captionError && <p role="alert">{captionError}</p>}
+            </form>
+          ) : (
+            <div>
+              <p>{item.caption || 'Підпис не додано'}</p>
+              {item.permissions.can_edit_caption && <button onClick={() => setCaptionEditing(true)}><Pencil size={15} /> {item.caption ? 'Редагувати' : 'Додати підпис'}</button>}
+            </div>
+          )}
+        </div>
+        <dl className="viewer-details">
+          <div><dt>Автор</dt><dd>{item.uploaded_by.display_name}</dd></div>
+          {item.captured_at && <div><dt>Знято</dt><dd>{new Date(item.captured_at).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })}</dd></div>}
+          <div><dt>Завантажено</dt><dd>{new Date(item.created_at).toLocaleString('uk-UA', { dateStyle: 'medium', timeStyle: 'short' })}</dd></div>
+          <div><dt>{item.media_type === 'video' ? 'Тривалість' : 'Роздільність'}</dt><dd>{item.media_type === 'video' ? mediaDuration(item.duration_ms) || 'Невідомо' : dimensions || 'Невідомо'}</dd></div>
+          <div><dt>Файл</dt><dd>{format} · {bytes(item.size_bytes)}</dd></div>
+          <div className="viewer-details__index"><dt>Кадр</dt><dd>{index + 1} / {items.length}</dd></div>
+        </dl>
+      </footer>
     </div>
   )
 }
@@ -1541,6 +1598,19 @@ function RoomPage() {
     }
   }
 
+  async function updateCaption(item: GalleryItem, caption: string) {
+    setError('')
+    try {
+      const result = await media.updateCaption(item.id, caption)
+      setGallery((current) => current.map((candidate) => candidate.id === item.id
+        ? { ...candidate, caption: result.caption, caption_updated_at: result.caption_updated_at }
+        : candidate))
+    } catch (cause) {
+      setError(errorMessage(cause))
+      throw cause
+    }
+  }
+
   if (loading) return <main className="status-page"><Brand /><div className="loading-line" /><p>Відкриваємо кімнату…</p></main>
   if (error && !room && !preview) return <main className="status-page"><Brand /><h1>Не вдалося відкрити кімнату</h1><p>{error}</p><Link className="primary-button" to="/">На головну</Link></main>
   if (preview && !room) return <JoinRoom preview={preview} onJoined={(joined) => { setPreview(null); setRoom(joined); void loadGallery() }} />
@@ -1754,7 +1824,7 @@ function RoomPage() {
         </div>
       )}
 
-      {selectedMedia && <MediaViewer item={selectedMedia} items={filteredGallery} canSetCover={room.role === 'owner'} onSelect={openMedia} onClose={closeMedia} onFavorite={toggleFavorite} onSetCover={setRoomCover} onError={setError} />}
+      {selectedMedia && <MediaViewer item={selectedMedia} items={filteredGallery} canSetCover={room.role === 'owner'} onSelect={openMedia} onClose={closeMedia} onFavorite={toggleFavorite} onSetCover={setRoomCover} onCaption={updateCaption} onError={setError} />}
 
       {settings && (
         <div className="dialog-backdrop" role="presentation" onMouseDown={() => setSettings(false)}>

@@ -702,6 +702,31 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
 
   /media/{mediaID}:
+    patch:
+      operationId: updateMediaCaption
+      tags: [Media]
+      summary: Add, edit, or clear a media caption as its uploader or room owner
+      parameters:
+        - $ref: '#/components/parameters/MediaID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [caption]
+              properties:
+                caption: {type: string, maxLength: 300, description: Whitespace is trimmed; an empty string clears the caption}
+      responses:
+        '200':
+          description: Updated caption
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CaptionState'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
     delete:
       operationId: deleteMedia
       tags: [Media]
@@ -1083,7 +1108,7 @@ components:
 
     GalleryItem:
       type: object
-      required: [id, media_type, mime_type, original_filename, size_bytes, created_at, thumbnail_url, thumbnail_status, uploaded_by, permissions, favorite_count, favorited, is_cover]
+      required: [id, media_type, mime_type, original_filename, size_bytes, created_at, thumbnail_url, thumbnail_status, uploaded_by, permissions, favorite_count, favorited, is_cover, caption, caption_updated_at]
       properties:
         id: {type: string, format: uuid}
         media_type: {type: string, enum: [image, video]}
@@ -1100,12 +1125,22 @@ components:
         uploaded_by: {$ref: '#/components/schemas/Uploader'}
         permissions:
           type: object
-          required: [can_delete]
+          required: [can_delete, can_edit_caption]
           properties:
             can_delete: {type: boolean}
+            can_edit_caption: {type: boolean}
         favorite_count: {type: integer, minimum: 0}
         favorited: {type: boolean}
         is_cover: {type: boolean}
+        caption: {type: [string, 'null'], maxLength: 300}
+        caption_updated_at: {type: [string, 'null'], format: date-time}
+
+    CaptionState:
+      type: object
+      required: [caption, caption_updated_at]
+      properties:
+        caption: {type: [string, 'null'], maxLength: 300}
+        caption_updated_at: {type: [string, 'null'], format: date-time}
 
     FavoriteState:
       type: object

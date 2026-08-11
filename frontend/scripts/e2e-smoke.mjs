@@ -154,6 +154,14 @@ try {
   })
   if (guestFavorite.favorite_count !== 2 || !guestFavorite.favorited) throw new Error('Guest favorite was not counted')
   await page.getByRole('button', { name: 'Прибрати з обраного pwa-64x64.png' }).getByText('2').waitFor({ timeout: 4000 })
+  const forbiddenCaption = await fetch(`${baseURL}/api/v1/media/${uploadedMediaID}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${guestAuth.access_token}` }, body: JSON.stringify({ caption: 'Чужий підпис' }),
+  })
+  if (forbiddenCaption.status !== 403) throw new Error(`Non-uploader edited caption with status ${forbiddenCaption.status}`)
+  const oversizedCaption = await fetch(`${baseURL}/api/v1/media/${uploadedMediaID}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.access_token}` }, body: JSON.stringify({ caption: 'ї'.repeat(301) }),
+  })
+  if (oversizedCaption.status !== 422) throw new Error(`Oversized caption returned ${oversizedCaption.status}`)
   const forbiddenCover = await fetch(`${baseURL}/api/v1/rooms/${slug}/cover`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${guestAuth.access_token}` },
@@ -195,8 +203,18 @@ try {
   })
   if (reusedArchive.archive.id !== reusedAgain.archive.id || reusedAgain.archive.status !== 'ready') throw new Error('Ready archive was not reused')
   await page.locator('article.media-card .media-preview').first().click()
-  await page.getByRole('dialog', { name: 'pwa-64x64.png' }).waitFor()
+  const viewer = page.getByRole('dialog', { name: 'pwa-64x64.png' })
+  await viewer.waitFor()
   if (!page.url().includes('media=')) throw new Error('Media viewer did not update the URL')
+  await viewer.getByRole('button', { name: 'Додати підпис' }).click()
+  await viewer.getByLabel('Підпис').fill('Перший кадр події')
+  await viewer.getByRole('button', { name: 'Зберегти', exact: true }).click()
+  await viewer.getByText('Перший кадр події').waitFor()
+  for (const label of ['Автор', 'Завантажено', 'Роздільність', 'Файл']) await viewer.getByText(label, { exact: true }).waitFor()
+  await json(`/media/${uploadedMediaID}`, {
+    method: 'PATCH', headers: { Authorization: `Bearer ${auth.access_token}` }, body: JSON.stringify({ caption: 'Оновлено наживо' }),
+  })
+  await viewer.getByText('Оновлено наживо').waitFor({ timeout: 4000 })
   await page.getByRole('button', { name: 'Зробити обкладинкою кімнати' }).click()
   await page.getByRole('button', { name: 'Поточна обкладинка кімнати' }).waitFor()
   await page.screenshot({ path: resolve(artifacts, 'viewer-375.png') })
@@ -340,7 +358,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

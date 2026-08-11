@@ -78,10 +78,12 @@ export interface GalleryItem {
   thumbnail_url: string | null
   thumbnail_status: 'pending' | 'processing' | 'ready' | 'failed'
   uploaded_by: { id: string; display_name: string }
-  permissions: { can_delete: boolean }
   favorite_count: number
   favorited: boolean
   is_cover: boolean
+  caption: string | null
+  caption_updated_at: string | null
+  permissions: { can_delete: boolean; can_edit_caption: boolean }
 }
 
 export interface GalleryPage {

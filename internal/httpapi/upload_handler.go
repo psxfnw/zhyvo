@@ -35,6 +35,10 @@ type roomCoverRequest struct {
 	MediaID uuid.UUID `json:"media_id"`
 }
 
+type updateCaptionRequest struct {
+	Caption *string `json:"caption"`
+}
+
 func (handler uploadHandler) initiate(response http.ResponseWriter, request *http.Request) {
 	principal, ok := principalFromContext(request.Context())
 	if !ok {
@@ -177,6 +181,24 @@ func (handler uploadHandler) favorite(response http.ResponseWriter, request *htt
 	writeJSON(response, http.StatusOK, state)
 }
 
+func (handler uploadHandler) updateCaption(response http.ResponseWriter, request *http.Request) {
+	principal, mediaID, ok := handler.principalAndMediaID(response, request)
+	if !ok {
+		return
+	}
+	var input updateCaptionRequest
+	if err := decodeJSON(response, request, &input); err != nil || input.Caption == nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_JSON", "caption must be a string")
+		return
+	}
+	state, err := handler.service.UpdateCaption(request.Context(), principal, mediaID, *input.Caption)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, state)
+}
+
 func (handler uploadHandler) setCover(response http.ResponseWriter, request *http.Request) {
 	principal, ok := principalFromContext(request.Context())
 	if !ok {
@@ -259,6 +281,8 @@ func (handler uploadHandler) writeError(response http.ResponseWriter, request *h
 		writeAPIError(response, request, http.StatusForbidden, "ROOM_OWNER_REQUIRED", "Only the room owner can perform this action")
 	case errors.Is(err, media.ErrMediaAccessDenied):
 		writeAPIError(response, request, http.StatusForbidden, "MEDIA_DELETE_FORBIDDEN", "Only the uploader or room owner can delete this media")
+	case errors.Is(err, media.ErrMediaCaptionForbidden):
+		writeAPIError(response, request, http.StatusForbidden, "MEDIA_CAPTION_FORBIDDEN", "Only the uploader or room owner can edit this caption")
 	case errors.Is(err, media.ErrMediaDuplicate):
 		writeAPIError(response, request, http.StatusConflict, "MEDIA_DUPLICATE", "This file is already in the room")
 	default:

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,7 +20,8 @@ type Uploader struct {
 }
 
 type MediaPermissions struct {
-	CanDelete bool `json:"can_delete"`
+	CanDelete      bool `json:"can_delete"`
+	CanEditCaption bool `json:"can_edit_caption"`
 }
 
 type GalleryItem struct {
@@ -40,6 +42,8 @@ type GalleryItem struct {
 	FavoriteCount    int              `json:"favorite_count"`
 	Favorited        bool             `json:"favorited"`
 	IsCover          bool             `json:"is_cover"`
+	Caption          *string          `json:"caption"`
+	CaptionUpdatedAt *time.Time       `json:"caption_updated_at"`
 
 	thumbnailKey *string
 }
@@ -91,7 +95,7 @@ func (s *Service) Gallery(ctx context.Context, identityID uuid.UUID, slug string
 		       m.thumbnail_key, m.thumbnail_status, i.id, i.display_name, m.uploader_identity_id,
 		       (SELECT count(*)::integer FROM media_favorites favorite WHERE favorite.media_id = m.id),
 		       EXISTS (SELECT 1 FROM media_favorites favorite WHERE favorite.media_id = m.id AND favorite.identity_id = $2),
-		       COALESCE(r.cover_media_id = m.id, false)
+		       COALESCE(r.cover_media_id = m.id, false), m.caption, m.caption_updated_at
 		FROM media m
 		JOIN identities i ON i.id = m.uploader_identity_id
 		JOIN rooms r ON r.id = m.room_id
@@ -114,11 +118,12 @@ func (s *Service) Gallery(ctx context.Context, identityID uuid.UUID, slug string
 			&item.ID, &item.MediaType, &item.MIMEType, &item.OriginalFilename, &item.SizeBytes,
 			&item.Width, &item.Height, &item.DurationMS, &item.CapturedAt, &item.CreatedAt,
 			&item.thumbnailKey, &item.ThumbnailStatus, &item.UploadedBy.ID, &item.UploadedBy.DisplayName, &uploaderID,
-			&item.FavoriteCount, &item.Favorited, &item.IsCover,
+			&item.FavoriteCount, &item.Favorited, &item.IsCover, &item.Caption, &item.CaptionUpdatedAt,
 		); err != nil {
 			return GalleryPage{}, fmt.Errorf("scan gallery item: %w", err)
 		}
 		item.Permissions.CanDelete = role == "owner" || uploaderID == identityID
+		item.Permissions.CanEditCaption = role == "owner" || uploaderID == identityID
 		if item.thumbnailKey != nil {
 			url, _, err := s.store.PresignGet(ctx, *item.thumbnailKey, "")
 			if err != nil {
@@ -147,6 +152,61 @@ func (s *Service) Gallery(ctx context.Context, identityID uuid.UUID, slug string
 		nextCursor = &encoded
 	}
 	return GalleryPage{Items: items, NextCursor: nextCursor, HasMore: hasMore}, nil
+}
+
+type CaptionState struct {
+	Caption          *string    `json:"caption"`
+	CaptionUpdatedAt *time.Time `json:"caption_updated_at"`
+}
+
+func (s *Service) UpdateCaption(ctx context.Context, identityID, mediaID uuid.UUID, caption string) (CaptionState, error) {
+	caption, err := normalizeCaption(caption)
+	if err != nil {
+		return CaptionState{}, err
+	}
+	var uploaderID uuid.UUID
+	var mediaStatus, role, roomStatus string
+	var roomExpiry time.Time
+	err = s.db.QueryRow(ctx, `
+		SELECT media.uploader_identity_id, media.status, member.role, room.status, room.expires_at
+		FROM media
+		JOIN rooms room ON room.id = media.room_id
+		JOIN room_members member ON member.room_id = room.id AND member.identity_id = $1
+		WHERE media.id = $2
+	`, identityID, mediaID).Scan(&uploaderID, &mediaStatus, &role, &roomStatus, &roomExpiry)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CaptionState{}, ErrMediaNotFound
+	}
+	if err != nil {
+		return CaptionState{}, fmt.Errorf("authorize caption update: %w", err)
+	}
+	if roomStatus != "active" || !roomExpiry.After(s.now()) {
+		return CaptionState{}, ErrRoomExpired
+	}
+	if mediaStatus != "ready" {
+		return CaptionState{}, ErrMediaNotReady
+	}
+	if role != "owner" && uploaderID != identityID {
+		return CaptionState{}, ErrMediaCaptionForbidden
+	}
+	var result CaptionState
+	if err := s.db.QueryRow(ctx, `
+		UPDATE media
+		SET caption = NULLIF($1, ''), caption_updated_at = now()
+		WHERE id = $2
+		RETURNING caption, caption_updated_at
+	`, caption, mediaID).Scan(&result.Caption, &result.CaptionUpdatedAt); err != nil {
+		return CaptionState{}, fmt.Errorf("update media caption: %w", err)
+	}
+	return result, nil
+}
+
+func normalizeCaption(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if utf8.RuneCountInString(value) > 300 {
+		return "", fmt.Errorf("%w: caption must not exceed 300 characters", ErrInvalidInput)
+	}
+	return value, nil
 }
 
 type FavoriteState struct {

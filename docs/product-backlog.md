@@ -1,5 +1,11 @@
 # Product backlog
 
+## Media captions and details
+
+Status: implemented in preview.
+
+Uploaders can add, edit, or clear a plain-text caption of up to 300 Unicode characters; the room owner has the same capability for moderation. The full-screen viewer exposes the real uploader, capture and upload times, dimensions or video duration, format, original size, and gallery position. Caption changes reuse the durable `media_updated` realtime event and appear on other open devices without reloading.
+
 ## Live room synchronization
 
 Status: implemented in preview.

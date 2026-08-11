@@ -111,6 +111,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		router.Get("/api/v1/rooms/{slug}/events", realtimeAPI.events)
 		router.Put("/api/v1/media/{mediaID}/favorite", uploadAPI.favorite)
 		router.Delete("/api/v1/media/{mediaID}/favorite", uploadAPI.favorite)
+		router.Patch("/api/v1/media/{mediaID}", uploadAPI.updateCaption)
 		router.Put("/api/v1/rooms/{slug}/cover", uploadAPI.setCover)
 		router.Post("/api/v1/media/{mediaID}/download-url", uploadAPI.download)
 		router.Delete("/api/v1/media/{mediaID}", uploadAPI.deleteMedia)

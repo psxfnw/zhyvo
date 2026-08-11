@@ -34,6 +34,8 @@ This changes name resolution only inside the launched test browser and does not 
 - Add favorites from two accounts, verify the shared count, and open `Обрані` and `Найкращі`.
 - Keep the room open on two devices, change a favorite and upload a file on the second one, and confirm the first updates without reloading.
 - Scroll below the gallery heading before the second-device upload and confirm the `Нових файлів` shelf returns to the fresh media.
+- Add and edit a caption in the viewer, confirm another open device updates live, and verify a regular member cannot edit someone else's caption.
+- Confirm the viewer shows the real author, upload time, capture time when present, dimensions or duration, format, and original size.
 - As the owner, set an image as the room cover; confirm a regular member cannot replace it.
 - Download one original file and use the mobile multi-file save/share flow.
 - Close joining and uploads independently; confirm existing members still see the gallery.

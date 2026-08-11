@@ -30,6 +30,10 @@ type completeUploadRequest struct {
 	Parts []media.CompletedPart `json:"parts"`
 }
 
+type roomCoverRequest struct {
+	MediaID uuid.UUID `json:"media_id"`
+}
+
 func (handler uploadHandler) initiate(response http.ResponseWriter, request *http.Request) {
 	principal, ok := principalFromContext(request.Context())
 	if !ok {
@@ -159,6 +163,37 @@ func (handler uploadHandler) deleteMedia(response http.ResponseWriter, request *
 	response.WriteHeader(http.StatusNoContent)
 }
 
+func (handler uploadHandler) favorite(response http.ResponseWriter, request *http.Request) {
+	principal, mediaID, ok := handler.principalAndMediaID(response, request)
+	if !ok {
+		return
+	}
+	state, err := handler.service.SetFavorite(request.Context(), principal, mediaID, request.Method == http.MethodPut)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, state)
+}
+
+func (handler uploadHandler) setCover(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	var input roomCoverRequest
+	if err := decodeJSON(response, request, &input); err != nil || input.MediaID == uuid.Nil {
+		writeAPIError(response, request, http.StatusBadRequest, "INVALID_JSON", "media_id must be a UUID")
+		return
+	}
+	if err := handler.service.SetCover(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), input.MediaID); err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
 func (handler uploadHandler) principalAndUploadID(response http.ResponseWriter, request *http.Request) (uuid.UUID, uuid.UUID, bool) {
 	principal, ok := principalFromContext(request.Context())
 	if !ok {
@@ -219,6 +254,8 @@ func (handler uploadHandler) writeError(response http.ResponseWriter, request *h
 		writeAPIError(response, request, http.StatusNotFound, "MEDIA_NOT_FOUND", "Media not found")
 	case errors.Is(err, media.ErrMediaNotReady):
 		writeAPIError(response, request, http.StatusConflict, "MEDIA_NOT_READY", "Media is not ready")
+	case errors.Is(err, media.ErrRoomOwnerRequired):
+		writeAPIError(response, request, http.StatusForbidden, "ROOM_OWNER_REQUIRED", "Only the room owner can perform this action")
 	case errors.Is(err, media.ErrMediaAccessDenied):
 		writeAPIError(response, request, http.StatusForbidden, "MEDIA_DELETE_FORBIDDEN", "Only the uploader or room owner can delete this media")
 	default:

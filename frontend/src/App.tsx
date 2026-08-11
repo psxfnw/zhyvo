@@ -13,6 +13,7 @@ import {
   FileImage,
   ImagePlus,
   Images,
+  Heart,
   LockKeyhole,
   LogIn,
   Menu,
@@ -47,7 +48,7 @@ function uuid() {
   return crypto.randomUUID()
 }
 
-type GalleryFilter = 'all' | 'image' | 'video' | 'mine'
+type GalleryFilter = 'all' | 'image' | 'video' | 'mine' | 'favorites' | 'best'
 
 function mediaDate(item: GalleryItem) {
   return new Date(item.captured_at ?? item.created_at)
@@ -564,16 +565,18 @@ function UploadQueue({ uploads, onCancel, onPause, onRetry, onClearCompleted }: 
   )
 }
 
-function GalleryCard({ item, selectionMode, selected, onToggle, onDelete, onOpen, onError }: {
+function GalleryCard({ item, selectionMode, selected, onToggle, onDelete, onOpen, onFavorite, onError }: {
   item: GalleryItem
   selectionMode: boolean
   selected: boolean
   onToggle: (item: GalleryItem) => void
   onDelete: (item: GalleryItem) => void
   onOpen: (item: GalleryItem) => void
+  onFavorite: (item: GalleryItem) => Promise<void>
   onError: (message: string) => void
 }) {
   const [busy, setBusy] = useState(false)
+  const [favoriteBusy, setFavoriteBusy] = useState(false)
   async function download() {
     setBusy(true)
     try {
@@ -585,6 +588,10 @@ function GalleryCard({ item, selectionMode, selected, onToggle, onDelete, onOpen
       setBusy(false)
     }
   }
+  async function toggleFavorite() {
+    setFavoriteBusy(true)
+    try { await onFavorite(item) } finally { setFavoriteBusy(false) }
+  }
   return (
     <article className={`media-card ${selected ? 'media-card--selected' : ''}`}>
       <button className="media-preview" type="button" onClick={() => selectionMode ? onToggle(item) : onOpen(item)} aria-label={selectionMode ? `${selected ? 'Зняти вибір із' : 'Вибрати'} ${item.original_filename}` : `Відкрити ${item.original_filename}`}>
@@ -593,8 +600,10 @@ function GalleryCard({ item, selectionMode, selected, onToggle, onDelete, onOpen
         )}
         {item.media_type === 'video' && <span className="video-badge"><Video size={14} /> {mediaDuration(item.duration_ms) || 'Відео'}</span>}
         {isHEIFItem(item) && <span className="format-badge">HEIC</span>}
+        {item.is_cover && <span className="cover-badge"><Crown size={13} /> Обкладинка</span>}
         {selectionMode && <span className={`media-select ${selected ? 'is-selected' : ''}`} aria-hidden="true">{selected && <Check size={16} />}</span>}
       </button>
+      {!selectionMode && <button className={`favorite-button ${item.favorited ? 'is-active' : ''}`} type="button" disabled={favoriteBusy} aria-pressed={item.favorited} aria-label={`${item.favorited ? 'Прибрати з обраного' : 'Додати в обране'} ${item.original_filename}`} onClick={() => void toggleFavorite()}><Heart size={17} fill={item.favorited ? 'currentColor' : 'none'} /><span>{item.favorite_count}</span></button>}
       <div className="media-meta">
         <div><strong title={item.original_filename}>{item.original_filename}</strong><span>{item.uploaded_by.display_name} · {bytes(item.size_bytes)}</span></div>
         <div className="media-actions">
@@ -787,16 +796,21 @@ function ShareDialog({ room, webURL, telegramURL, previewURL, onClose, onCopied 
   )
 }
 
-function MediaViewer({ item, items, onSelect, onClose, onError }: {
+function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, onSetCover, onError }: {
   item: GalleryItem
   items: GalleryItem[]
+  canSetCover: boolean
   onSelect: (item: GalleryItem) => void
   onClose: () => void
+  onFavorite: (item: GalleryItem) => Promise<void>
+  onSetCover: (item: GalleryItem) => Promise<void>
   onError: (message: string) => void
 }) {
   const closeRef = useRef<HTMLButtonElement>(null)
   const [source, setSource] = useState<{ url: string; filename: string } | null>(null)
   const [loading, setLoading] = useState(true)
+  const [favoriteBusy, setFavoriteBusy] = useState(false)
+  const [coverBusy, setCoverBusy] = useState(false)
   const index = items.findIndex((candidate) => candidate.id === item.id)
   const previous = index > 0 ? items[index - 1] : null
   const next = index >= 0 && index < items.length - 1 ? items[index + 1] : null
@@ -829,6 +843,8 @@ function MediaViewer({ item, items, onSelect, onClose, onError }: {
       <header className="viewer-topbar">
         <div><strong id="viewer-title">{item.original_filename}</strong><span>{item.uploaded_by.display_name} · {bytes(item.size_bytes)}</span></div>
         <div className="viewer-actions">
+          <button className={`viewer-favorite ${item.favorited ? 'is-active' : ''}`} disabled={favoriteBusy} aria-pressed={item.favorited} aria-label={item.favorited ? 'Прибрати з обраного' : 'Додати в обране'} onClick={() => { setFavoriteBusy(true); void onFavorite(item).finally(() => setFavoriteBusy(false)) }}><Heart size={19} fill={item.favorited ? 'currentColor' : 'none'} /><span>{item.favorite_count}</span></button>
+          {canSetCover && item.media_type === 'image' && <button className={`icon-button ${item.is_cover ? 'is-active' : ''}`} disabled={coverBusy || item.is_cover} aria-label={item.is_cover ? 'Поточна обкладинка кімнати' : 'Зробити обкладинкою кімнати'} onClick={() => { setCoverBusy(true); void onSetCover(item).finally(() => setCoverBusy(false)) }}><Crown /></button>}
           {source && <button className="icon-button" onClick={() => void saveRemoteFile({ ...source, mimeType: item.mime_type }).catch((cause) => onError(errorMessage(cause)))} aria-label="Завантажити оригінал"><ArrowDownToLine /></button>}
           <button ref={closeRef} className="icon-button" onClick={onClose} aria-label="Закрити перегляд"><X /></button>
         </div>
@@ -1424,6 +1440,30 @@ function RoomPage() {
     }
   }
 
+  async function toggleFavorite(item: GalleryItem) {
+    setError('')
+    try {
+      const result = await media.favorite(item.id, !item.favorited)
+      setGallery((current) => current.map((candidate) => candidate.id === item.id
+        ? { ...candidate, favorite_count: result.favorite_count, favorited: result.favorited }
+        : candidate))
+    } catch (cause) {
+      setError(errorMessage(cause))
+      throw cause
+    }
+  }
+
+  async function setRoomCover(item: GalleryItem) {
+    setError('')
+    try {
+      await media.setCover(slug, item.id)
+      setGallery((current) => current.map((candidate) => ({ ...candidate, is_cover: candidate.id === item.id })))
+    } catch (cause) {
+      setError(errorMessage(cause))
+      throw cause
+    }
+  }
+
   if (loading) return <main className="status-page"><Brand /><div className="loading-line" /><p>Відкриваємо кімнату…</p></main>
   if (error && !room && !preview) return <main className="status-page"><Brand /><h1>Не вдалося відкрити кімнату</h1><p>{error}</p><Link className="primary-button" to="/">На головну</Link></main>
   if (preview && !room) return <JoinRoom preview={preview} onJoined={(joined) => { setPreview(null); setRoom(joined); void loadGallery() }} />
@@ -1433,10 +1473,15 @@ function RoomPage() {
   const usedPercent = Math.min(100, (room.used_storage_bytes / room.max_storage_bytes) * 100)
   const filteredGallery = gallery.filter((item) => {
     if (galleryFilter === 'mine') return item.uploaded_by.id === session?.identity.id
+    if (galleryFilter === 'favorites') return item.favorited
     if (galleryFilter === 'image' || galleryFilter === 'video') return item.media_type === galleryFilter
     return true
-  })
-  const galleryGroups = filteredGallery.reduce<Array<{ key: string; label: string; items: GalleryItem[] }>>((groups, item) => {
+  }).sort((left, right) => galleryFilter === 'best'
+    ? right.favorite_count - left.favorite_count || mediaDate(right).getTime() - mediaDate(left).getTime()
+    : mediaDate(right).getTime() - mediaDate(left).getTime())
+  const galleryGroups = galleryFilter === 'best' && filteredGallery.length
+    ? [{ key: 'best', label: 'Найкращі кадри', items: filteredGallery }]
+    : filteredGallery.reduce<Array<{ key: string; label: string; items: GalleryItem[] }>>((groups, item) => {
     const day = galleryDay(item)
     const existing = groups.at(-1)
     if (existing?.key === day.key) existing.items.push(item)
@@ -1449,9 +1494,12 @@ function RoomPage() {
     image: gallery.filter((item) => item.media_type === 'image').length,
     video: gallery.filter((item) => item.media_type === 'video').length,
     mine: gallery.filter((item) => item.uploaded_by.id === session?.identity.id).length,
+    favorites: gallery.filter((item) => item.favorited).length,
+    best: gallery.length,
   }
   const selectedItems = gallery.filter((item) => selectedMediaIDs.has(item.id))
   const selectedDeletableCount = selectedItems.filter((item) => item.permissions.can_delete).length
+  const coverItem = gallery.find((item) => item.is_cover && item.thumbnail_url)
   const shareURL = `${window.location.origin}/r/${slug}`
   const telegramInviteURL = telegramRoomLink(slug)
   const previewInviteURL = roomInviteLink(slug)
@@ -1466,7 +1514,8 @@ function RoomPage() {
         </div>
       </header>
 
-      <section className="room-heading">
+      <section className={`room-heading ${coverItem ? 'room-heading--has-cover' : ''}`}>
+        {coverItem && <img className="room-heading__cover" src={coverItem.thumbnail_url ?? ''} alt="" aria-hidden="true" />}
         <div>
           <p className="eyebrow">Кімната {room.slug}</p>
           <h1>{room.name}</h1>
@@ -1507,6 +1556,8 @@ function RoomPage() {
               ['image', 'Фото'],
               ['video', 'Відео'],
               ['mine', 'Мої'],
+              ['favorites', 'Обрані'],
+              ['best', 'Найкращі'],
             ] as Array<[GalleryFilter, string]>).map(([value, label]) => (
               <button key={value} className={galleryFilter === value ? 'is-active' : ''} aria-pressed={galleryFilter === value} onClick={() => setGalleryFilter(value)}>
                 <span>{label}</span><small>{filterCounts[value]}</small>
@@ -1529,7 +1580,7 @@ function RoomPage() {
               <section className="gallery-group" key={group.key} aria-labelledby={`gallery-day-${group.key}`}>
                 <header><h3 id={`gallery-day-${group.key}`}>{group.label}</h3><span>{group.items.length}</span></header>
                 <div className="gallery-grid">
-                  {group.items.map((item) => <GalleryCard key={item.id} item={item} selectionMode={selectionMode} selected={selectedMediaIDs.has(item.id)} onToggle={toggleMediaSelection} onDelete={deleteItem} onOpen={openMedia} onError={setError} />)}
+                  {group.items.map((item) => <GalleryCard key={item.id} item={item} selectionMode={selectionMode} selected={selectedMediaIDs.has(item.id)} onToggle={toggleMediaSelection} onDelete={deleteItem} onOpen={openMedia} onFavorite={toggleFavorite} onError={setError} />)}
                 </div>
               </section>
             ))}
@@ -1540,7 +1591,7 @@ function RoomPage() {
         <section className="empty-gallery">
           <ImagePlus size={36} strokeWidth={1.5} />
           <h2>{gallery.length ? 'Тут поки порожньо' : 'Тут ще немає медіа'}</h2>
-          <p>{gallery.length ? 'У вибраному фільтрі немає файлів.' : room.accepting_uploads ? 'Додайте перші фото або відео з події.' : 'Власник кімнати закрив завантаження.'}</p>
+          <p>{gallery.length ? galleryFilter === 'favorites' ? 'Додайте серце кадрам, які хочете зберегти.' : 'У вибраному фільтрі немає файлів.' : room.accepting_uploads ? 'Додайте перші фото або відео з події.' : 'Власник кімнати закрив завантаження.'}</p>
           {gallery.length ? <button className="text-link" onClick={() => setGalleryFilter('all')}>Показати всі</button> : room.accepting_uploads && <button className="text-link" onClick={() => inputRef.current?.click()}>Вибрати з галереї</button>}
         </section>
       )}
@@ -1614,7 +1665,7 @@ function RoomPage() {
         </div>
       )}
 
-      {selectedMedia && <MediaViewer item={selectedMedia} items={filteredGallery} onSelect={openMedia} onClose={closeMedia} onError={setError} />}
+      {selectedMedia && <MediaViewer item={selectedMedia} items={filteredGallery} canSetCover={room.role === 'owner'} onSelect={openMedia} onClose={closeMedia} onFavorite={toggleFavorite} onSetCover={setRoomCover} onError={setError} />}
 
       {settings && (
         <div className="dialog-backdrop" role="presentation" onMouseDown={() => setSettings(false)}>

@@ -122,11 +122,39 @@ try {
     throw new Error(`Recovered upload did not finish: ${queueState}; browser errors: ${pageErrors.join('; ')}; requests: ${requestFailures.slice(-8).join('; ')}`, { cause })
   })
   await page.getByRole('button', { name: 'Приховати завершені' }).click()
+  let ownerGallery
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    ownerGallery = await json(`/rooms/${slug}/media?limit=50`, { headers: { Authorization: `Bearer ${auth.access_token}` } })
+    if (ownerGallery.items[0]?.thumbnail_status === 'ready') break
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 500))
+  }
+  const uploadedMediaID = ownerGallery.items[0]?.id
+  if (!uploadedMediaID) throw new Error('Uploaded media is missing from gallery API')
+  if (ownerGallery.items[0].thumbnail_status !== 'ready' || !ownerGallery.items[0].thumbnail_url) throw new Error(`Thumbnail did not become ready: ${ownerGallery.items[0].thumbnail_status}`)
+  await page.getByRole('button', { name: 'Додати в обране pwa-64x64.png' }).click()
+  await page.getByRole('button', { name: 'Прибрати з обраного pwa-64x64.png' }).getByText('1').waitFor()
+  const guestFavorite = await json(`/media/${uploadedMediaID}/favorite`, {
+    method: 'PUT', headers: { Authorization: `Bearer ${guestAuth.access_token}` },
+  })
+  if (guestFavorite.favorite_count !== 2 || !guestFavorite.favorited) throw new Error('Guest favorite was not counted')
+  const forbiddenCover = await fetch(`${baseURL}/api/v1/rooms/${slug}/cover`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${guestAuth.access_token}` },
+    body: JSON.stringify({ media_id: uploadedMediaID }),
+  })
+  if (forbiddenCover.status !== 403) throw new Error(`Non-owner set room cover with status ${forbiddenCover.status}`)
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Прибрати з обраного pwa-64x64.png' }).getByText('2').waitFor()
   await page.locator('.gallery-filters button').filter({ hasText: 'Фото' }).click()
   await page.locator('article.media-card').waitFor()
   await page.locator('.gallery-filters button').filter({ hasText: 'Відео' }).click()
   await page.getByText('У вибраному фільтрі немає файлів.').waitFor()
   await page.getByRole('button', { name: 'Показати всі' }).click()
+  await page.locator('.gallery-filters button').filter({ hasText: 'Обрані' }).click()
+  await page.locator('article.media-card').waitFor()
+  await page.locator('.gallery-filters button').filter({ hasText: 'Найкращі' }).click()
+  await page.getByRole('heading', { name: 'Найкращі кадри' }).waitFor()
+  await page.locator('.gallery-filters button').filter({ hasText: 'Усі' }).click()
   await page.getByRole('button', { name: 'Вибрати' }).click()
   await page.locator('article.media-card .media-preview').first().click()
   const selectionBar = page.locator('.selection-bar')
@@ -152,8 +180,11 @@ try {
   await page.locator('article.media-card .media-preview').first().click()
   await page.getByRole('dialog', { name: 'pwa-64x64.png' }).waitFor()
   if (!page.url().includes('media=')) throw new Error('Media viewer did not update the URL')
+  await page.getByRole('button', { name: 'Зробити обкладинкою кімнати' }).click()
+  await page.getByRole('button', { name: 'Поточна обкладинка кімнати' }).waitFor()
   await page.screenshot({ path: resolve(artifacts, 'viewer-375.png') })
   await page.getByRole('button', { name: 'Закрити перегляд' }).click()
+  await page.getByText('Обкладинка').waitFor()
   await page.getByRole('button', { name: 'Налаштування кімнати' }).click()
   const settingsDialog = page.getByRole('dialog', { name: 'Налаштування' })
   await settingsDialog.waitFor()
@@ -269,7 +300,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, galleryFilters: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

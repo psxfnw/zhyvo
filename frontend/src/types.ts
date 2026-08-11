@@ -79,6 +79,9 @@ export interface GalleryItem {
   thumbnail_status: 'pending' | 'processing' | 'ready' | 'failed'
   uploaded_by: { id: string; display_name: string }
   permissions: { can_delete: boolean }
+  favorite_count: number
+  favorited: boolean
+  is_cover: boolean
 }
 
 export interface GalleryPage {

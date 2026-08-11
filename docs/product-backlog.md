@@ -1,5 +1,11 @@
 # Product backlog
 
+## Favorite frames and room cover
+
+Status: implemented in preview.
+
+Every room member can add one private-to-identity favorite reaction per media item. The gallery exposes the total count, the current member's state, an `Обрані` view, and a popularity ordering. Existing batch selection lets users save just the resulting shortlist. A room owner can promote a ready image to the room cover; deleting that image safely clears the cover.
+
 ## Capture-date gallery timeline
 
 Status: implemented in preview.

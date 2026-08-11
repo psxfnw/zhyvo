@@ -621,6 +621,57 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
 
+  /media/{mediaID}/favorite:
+    put:
+      operationId: addMediaFavorite
+      tags: [Media]
+      summary: Add the current member's favorite reaction
+      parameters:
+        - $ref: '#/components/parameters/MediaID'
+      responses:
+        '200':
+          description: Updated favorite state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FavoriteState'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      operationId: removeMediaFavorite
+      tags: [Media]
+      summary: Remove the current member's favorite reaction
+      parameters:
+        - $ref: '#/components/parameters/MediaID'
+      responses:
+        '200':
+          description: Updated favorite state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FavoriteState'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /rooms/{slug}/cover:
+    put:
+      operationId: setRoomCover
+      tags: [Rooms]
+      summary: Set a ready image as the room cover (owner only)
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [media_id]
+              properties:
+                media_id: {type: string, format: uuid}
+      responses:
+        '204': {description: Room cover updated}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /media/{mediaID}:
     delete:
       operationId: deleteMedia
@@ -999,7 +1050,7 @@ components:
 
     GalleryItem:
       type: object
-      required: [id, media_type, mime_type, original_filename, size_bytes, created_at, thumbnail_url, thumbnail_status, uploaded_by, permissions]
+      required: [id, media_type, mime_type, original_filename, size_bytes, created_at, thumbnail_url, thumbnail_status, uploaded_by, permissions, favorite_count, favorited, is_cover]
       properties:
         id: {type: string, format: uuid}
         media_type: {type: string, enum: [image, video]}
@@ -1012,13 +1063,23 @@ components:
         captured_at: {type: [string, 'null'], format: date-time}
         created_at: {type: string, format: date-time}
         thumbnail_url: {type: [string, 'null'], format: uri}
-        thumbnail_status: {type: string, enum: [pending, ready]}
+        thumbnail_status: {type: string, enum: [pending, processing, ready, failed]}
         uploaded_by: {$ref: '#/components/schemas/Uploader'}
         permissions:
           type: object
           required: [can_delete]
           properties:
             can_delete: {type: boolean}
+        favorite_count: {type: integer, minimum: 0}
+        favorited: {type: boolean}
+        is_cover: {type: boolean}
+
+    FavoriteState:
+      type: object
+      required: [favorite_count, favorited]
+      properties:
+        favorite_count: {type: integer, minimum: 0}
+        favorited: {type: boolean}
 
     GalleryPage:
       type: object

@@ -37,6 +37,9 @@ type GalleryItem struct {
 	ThumbnailStatus  string           `json:"thumbnail_status"`
 	UploadedBy       Uploader         `json:"uploaded_by"`
 	Permissions      MediaPermissions `json:"permissions"`
+	FavoriteCount    int              `json:"favorite_count"`
+	Favorited        bool             `json:"favorited"`
+	IsCover          bool             `json:"is_cover"`
 
 	thumbnailKey *string
 }
@@ -85,15 +88,19 @@ func (s *Service) Gallery(ctx context.Context, identityID uuid.UUID, slug string
 	rows, err := s.db.Query(ctx, `
 		SELECT m.id, m.media_type, m.mime_type, m.original_filename, m.size_bytes,
 		       m.width, m.height, m.duration_ms, m.captured_at, m.created_at,
-		       m.thumbnail_key, m.thumbnail_status, i.id, i.display_name, m.uploader_identity_id
+		       m.thumbnail_key, m.thumbnail_status, i.id, i.display_name, m.uploader_identity_id,
+		       (SELECT count(*)::integer FROM media_favorites favorite WHERE favorite.media_id = m.id),
+		       EXISTS (SELECT 1 FROM media_favorites favorite WHERE favorite.media_id = m.id AND favorite.identity_id = $2),
+		       COALESCE(r.cover_media_id = m.id, false)
 		FROM media m
 		JOIN identities i ON i.id = m.uploader_identity_id
+		JOIN rooms r ON r.id = m.room_id
 		WHERE m.room_id = $1
 		  AND m.status = 'ready'
-		  AND ($2::timestamptz IS NULL OR (COALESCE(m.captured_at, m.created_at), m.id) < ($2, $3))
+		  AND ($3::timestamptz IS NULL OR (COALESCE(m.captured_at, m.created_at), m.id) < ($3, $4))
 		ORDER BY COALESCE(m.captured_at, m.created_at) DESC, m.id DESC
-		LIMIT $4
-	`, roomID, cursorTime, cursorID, limit+1)
+		LIMIT $5
+	`, roomID, identityID, cursorTime, cursorID, limit+1)
 	if err != nil {
 		return GalleryPage{}, fmt.Errorf("query gallery: %w", err)
 	}
@@ -107,6 +114,7 @@ func (s *Service) Gallery(ctx context.Context, identityID uuid.UUID, slug string
 			&item.ID, &item.MediaType, &item.MIMEType, &item.OriginalFilename, &item.SizeBytes,
 			&item.Width, &item.Height, &item.DurationMS, &item.CapturedAt, &item.CreatedAt,
 			&item.thumbnailKey, &item.ThumbnailStatus, &item.UploadedBy.ID, &item.UploadedBy.DisplayName, &uploaderID,
+			&item.FavoriteCount, &item.Favorited, &item.IsCover,
 		); err != nil {
 			return GalleryPage{}, fmt.Errorf("scan gallery item: %w", err)
 		}
@@ -139,6 +147,79 @@ func (s *Service) Gallery(ctx context.Context, identityID uuid.UUID, slug string
 		nextCursor = &encoded
 	}
 	return GalleryPage{Items: items, NextCursor: nextCursor, HasMore: hasMore}, nil
+}
+
+type FavoriteState struct {
+	FavoriteCount int  `json:"favorite_count"`
+	Favorited     bool `json:"favorited"`
+}
+
+func (s *Service) SetFavorite(ctx context.Context, identityID, mediaID uuid.UUID, enabled bool) (FavoriteState, error) {
+	var ready bool
+	err := s.db.QueryRow(ctx, `
+		SELECT m.status = 'ready'
+		FROM media m
+		JOIN rooms r ON r.id = m.room_id
+		JOIN room_members member ON member.room_id = r.id AND member.identity_id = $1
+		WHERE m.id = $2 AND r.status = 'active' AND r.expires_at > $3
+	`, identityID, mediaID, s.now().UTC()).Scan(&ready)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FavoriteState{}, ErrMediaNotFound
+	}
+	if err != nil {
+		return FavoriteState{}, fmt.Errorf("authorize media favorite: %w", err)
+	}
+	if !ready {
+		return FavoriteState{}, ErrMediaNotReady
+	}
+	if enabled {
+		_, err = s.db.Exec(ctx, `
+			INSERT INTO media_favorites (media_id, identity_id)
+			VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+		`, mediaID, identityID)
+	} else {
+		_, err = s.db.Exec(ctx, `DELETE FROM media_favorites WHERE media_id = $1 AND identity_id = $2`, mediaID, identityID)
+	}
+	if err != nil {
+		return FavoriteState{}, fmt.Errorf("update media favorite: %w", err)
+	}
+	var result FavoriteState
+	if err := s.db.QueryRow(ctx, `
+		SELECT count(*)::integer,
+		       EXISTS (SELECT 1 FROM media_favorites WHERE media_id = $1 AND identity_id = $2)
+		FROM media_favorites
+		WHERE media_id = $1
+	`, mediaID, identityID).Scan(&result.FavoriteCount, &result.Favorited); err != nil {
+		return FavoriteState{}, fmt.Errorf("read media favorite: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Service) SetCover(ctx context.Context, identityID uuid.UUID, slug string, mediaID uuid.UUID) error {
+	roomID, role, err := s.roomMembership(ctx, identityID, slug)
+	if err != nil {
+		return err
+	}
+	if role != "owner" {
+		return ErrRoomOwnerRequired
+	}
+	command, err := s.db.Exec(ctx, `
+		UPDATE rooms room
+		SET cover_media_id = $1
+		WHERE room.id = $2
+		  AND EXISTS (
+			SELECT 1 FROM media
+			WHERE id = $1 AND room_id = room.id AND status = 'ready' AND media_type = 'image'
+		  )
+	`, mediaID, roomID)
+	if err != nil {
+		return fmt.Errorf("set room cover: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return ErrMediaNotFound
+	}
+	return nil
 }
 
 func (s *Service) Download(ctx context.Context, identityID, mediaID uuid.UUID) (Download, error) {
@@ -229,6 +310,9 @@ func (s *Service) Delete(ctx context.Context, identityID, mediaID uuid.UUID) err
 	}
 	if currentStatus != "ready" && currentStatus != "failed" {
 		return ErrMediaNotReady
+	}
+	if _, err := tx.Exec(ctx, `UPDATE rooms SET cover_media_id = NULL WHERE id = $1 AND cover_media_id = $2`, roomID, mediaID); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE media SET status = 'deleted', deleted_at = now() WHERE id = $1`, mediaID); err != nil {
 		return err

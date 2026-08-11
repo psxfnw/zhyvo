@@ -30,6 +30,8 @@ This changes name resolution only inside the launched test browser and does not 
 - Join from a second Telegram account and confirm the room opens directly.
 - Upload several photos, one video, and—when available—an HEIC photo.
 - Confirm thumbnails have the right orientation and a video shows its duration.
+- Add favorites from two accounts, verify the shared count, and open `Обрані` and `Найкращі`.
+- As the owner, set an image as the room cover; confirm a regular member cannot replace it.
 - Download one original file and use the mobile multi-file save/share flow.
 - Close joining and uploads independently; confirm existing members still see the gallery.
 - Confirm the owner sees members and room activity, and can delete any media while a member can delete only their own.

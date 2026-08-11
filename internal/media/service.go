@@ -41,6 +41,7 @@ var (
 	ErrMediaNotReady        = errors.New("media is not ready")
 	ErrMediaNotFound        = errors.New("media not found")
 	ErrMediaAccessDenied    = errors.New("media access denied")
+	ErrRoomOwnerRequired    = errors.New("room owner required")
 	ErrInvalidUploadParts   = errors.New("invalid upload parts")
 	ErrUploadedSizeMismatch = errors.New("uploaded object size does not match declared size")
 	ErrIdempotencyConflict  = errors.New("idempotency key was already used with different input")

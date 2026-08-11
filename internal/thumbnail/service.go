@@ -222,9 +222,8 @@ func runFFmpeg(ctx context.Context, mediaType, sourceURL, outputPath string, dur
 	if mediaType == "video" {
 		base = append(base, "-ss", thumbnailSeek(durationMS))
 	}
-	arguments := append(base,
-		"-autorotate",
-		"-i", sourceURL,
+	arguments := appendFFmpegInput(base, sourceURL)
+	arguments = append(arguments,
 		"-vf", "scale=480:-2:force_original_aspect_ratio=decrease:flags=lanczos,format=yuvj420p",
 		"-frames:v", "1",
 		"-q:v", "4", "-map_metadata", "-1",
@@ -234,16 +233,23 @@ func runFFmpeg(ctx context.Context, mediaType, sourceURL, outputPath string, dur
 	if err != nil && mediaType == "video" {
 		fallback := []string{
 			"-hide_banner", "-loglevel", "error", "-y",
-			"-autorotate", "-i", sourceURL,
+		}
+		fallback = appendFFmpegInput(fallback, sourceURL)
+		fallback = append(fallback,
 			"-vf", "scale=480:-2:force_original_aspect_ratio=decrease:flags=lanczos,format=yuvj420p",
 			"-frames:v", "1", "-q:v", "4", "-map_metadata", "-1", outputPath,
-		}
+		)
 		output, err = exec.CommandContext(ctx, "ffmpeg", fallback...).CombinedOutput()
 	}
 	if err != nil {
 		return fmt.Errorf("ffmpeg: %s", strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func appendFFmpegInput(arguments []string, sourceURL string) []string {
+	// FFmpeg 6 treats autorotate as a boolean option with an explicit value.
+	return append(arguments, "-autorotate", "1", "-i", sourceURL)
 }
 
 func thumbnailSeek(durationMS int64) string {

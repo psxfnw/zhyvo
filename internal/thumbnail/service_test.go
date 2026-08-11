@@ -26,6 +26,14 @@ func TestThumbnailSeek(t *testing.T) {
 	}
 }
 
+func TestFFmpegInputEnablesAutorotate(t *testing.T) {
+	arguments := appendFFmpegInput([]string{"-y"}, "source.jpg")
+	want := []string{"-y", "-autorotate", "1", "-i", "source.jpg"}
+	if strings.Join(arguments, " ") != strings.Join(want, " ") {
+		t.Fatalf("appendFFmpegInput() = %q, want %q", arguments, want)
+	}
+}
+
 func TestSanitizeCommandErrorRemovesSignedURL(t *testing.T) {
 	source := "https://storage.invalid/file?X-Amz-Signature=secret"
 	err := sanitizeCommandError(assertError(source), source)

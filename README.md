@@ -50,6 +50,9 @@ POST   /api/v1/uploads/{uploadID}/parts
 POST   /api/v1/uploads/{uploadID}/complete
 DELETE /api/v1/uploads/{uploadID}
 GET    /api/v1/rooms/{slug}/media
+PUT    /api/v1/media/{mediaID}/favorite
+DELETE /api/v1/media/{mediaID}/favorite
+PUT    /api/v1/rooms/{slug}/cover
 POST   /api/v1/media/{mediaID}/download-url
 DELETE /api/v1/media/{mediaID}
 POST   /api/v1/rooms/{slug}/archive

@@ -119,6 +119,9 @@ try {
   await page.goto(`${baseURL}/?tgWebAppStartParam=admin_report_${adminReportID}`, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Потрібен Telegram' }).waitFor()
   if (new URL(page.url()).pathname !== `/admin/reports/${adminReportID}`) throw new Error('Admin report deep link did not route to the report')
+  await page.goto(`${baseURL}/?tgWebAppStartParam=admin`, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Потрібен Telegram' }).waitFor()
+  if (new URL(page.url()).pathname !== '/admin/reports') throw new Error('Admin dashboard deep link did not route to the inbox')
   await page.goto(baseURL, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Мої кімнати' }).waitFor()
   await page.evaluate((roomSlug) => {

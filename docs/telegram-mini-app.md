@@ -45,7 +45,7 @@ Frontend генерує це посилання для QR-коду, копіюв
 
 Для надсилання використовується проміжна адреса `/invite/<ROOM_CODE>` з Open Graph title, description і зображенням 1200×630. Telegram показує її як картку кімнати, а після натискання сторінка перенаправляє користувача у `startapp` Mini App. QR-код залишається прямим Telegram deep link.
 
-Внутрішні сповіщення про нове звернення використовують `startapp=admin_report_<UUID>`. Mini App перетворює його на `/admin/reports/<UUID>`, а API додатково перевіряє Telegram ID за серверним `ADMIN_TELEGRAM_IDS`; самого deep link недостатньо для доступу.
+Вхід до внутрішньої панелі використовує `startapp=admin`, а сповіщення про конкретне нове звернення — `startapp=admin_report_<UUID>`. Mini App перетворює їх на `/admin/reports` та `/admin/reports/<UUID>`, а API додатково перевіряє Telegram ID за серверним `ADMIN_TELEGRAM_IDS`; самого deep link недостатньо для доступу.
 
 Клієнт читає параметр із `initDataUnsafe.start_param`, підписаного raw `initData` та GET/hash-параметрів Telegram. Це покриває відмінності між Telegram iOS, Android і Desktop, але працює лише якщо для бота дійсно ввімкнено Main Mini App у BotFather.
 

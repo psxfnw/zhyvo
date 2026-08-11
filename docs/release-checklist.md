@@ -32,6 +32,8 @@ This changes name resolution only inside the launched test browser and does not 
 - Upload the same bytes under another filename and confirm Zhyvo reports `Вже є в галереї` without increasing room storage.
 - Confirm thumbnails have the right orientation and a video shows its duration.
 - Add favorites from two accounts, verify the shared count, and open `Обрані` and `Найкращі`.
+- Keep the room open on two devices, change a favorite and upload a file on the second one, and confirm the first updates without reloading.
+- Scroll below the gallery heading before the second-device upload and confirm the `Нових файлів` shelf returns to the fresh media.
 - As the owner, set an image as the room cover; confirm a regular member cannot replace it.
 - Download one original file and use the mobile multi-file save/share flow.
 - Close joining and uploads independently; confirm existing members still see the gallery.
@@ -45,6 +47,7 @@ This changes name resolution only inside the launched test browser and does not 
 - No bot token, OIDC secret, Tailscale auth key, or real `.env` file is tracked by Git.
 - PostgreSQL and object-storage volumes are backed up before any destructive migration.
 - The preview limitation is understood: the public URL stops when this PC or Docker Desktop is off.
+- Nginx keeps buffering disabled for `/api/v1/rooms/{slug}/events`; otherwise SSE updates may arrive in delayed batches.
 
 ## Current MVP boundaries
 

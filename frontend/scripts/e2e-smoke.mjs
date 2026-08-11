@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { mkdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { chromium } from 'playwright-core'
@@ -74,11 +75,13 @@ page.on('pageerror', (error) => pageErrors.push(error.message))
 page.on('requestfailed', (request) => requestFailures.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText}`))
 
 try {
-  await page.goto(`${baseURL}/r/${slug}`, { waitUntil: 'networkidle' })
+  await page.goto(`${baseURL}/r/${slug}`, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
 
-  await page.goto(`${baseURL}/?tgWebAppStartParam=room_${slug}`, { waitUntil: 'networkidle' })
+  const realtimeResponse = page.waitForResponse((response) => response.url().endsWith(`/api/v1/rooms/${slug}/events`) && response.status() === 200)
+  await page.goto(`${baseURL}/?tgWebAppStartParam=room_${slug}`, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
+  await realtimeResponse
   if (new URL(page.url()).pathname !== `/r/${slug}`) throw new Error(`Telegram start parameter did not route to room: ${page.url()}`)
 
   const portraitOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
@@ -109,7 +112,7 @@ try {
   })
   await page.locator('input[type="file"]:not([data-resume-upload])').setInputFiles(resolve('public', 'pwa-64x64.png'))
   await page.getByRole('button', { name: 'Повторити' }).waitFor({ timeout: 20_000 })
-  await page.reload({ waitUntil: 'networkidle' })
+  await page.reload({ waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
   const restoreButton = page.getByRole('button', { name: 'Вибрати файл' })
   await restoreButton.waitFor()
@@ -150,13 +153,14 @@ try {
     method: 'PUT', headers: { Authorization: `Bearer ${guestAuth.access_token}` },
   })
   if (guestFavorite.favorite_count !== 2 || !guestFavorite.favorited) throw new Error('Guest favorite was not counted')
+  await page.getByRole('button', { name: 'Прибрати з обраного pwa-64x64.png' }).getByText('2').waitFor({ timeout: 4000 })
   const forbiddenCover = await fetch(`${baseURL}/api/v1/rooms/${slug}/cover`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${guestAuth.access_token}` },
     body: JSON.stringify({ media_id: uploadedMediaID }),
   })
   if (forbiddenCover.status !== 403) throw new Error(`Non-owner set room cover with status ${forbiddenCover.status}`)
-  await page.reload({ waitUntil: 'networkidle' })
+  await page.reload({ waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: 'Прибрати з обраного pwa-64x64.png' }).getByText('2').waitFor()
   await page.locator('.gallery-filters button').filter({ hasText: 'Фото' }).click()
   await page.locator('article.media-card').waitFor()
@@ -256,8 +260,31 @@ try {
     .filter((box) => box.width < 44 || box.height < 44))
   if (undersizedTargets.length) throw new Error(`Touch targets below 44px: ${JSON.stringify(undersizedTargets)}`)
 
+  await page.setViewportSize({ width: 375, height: 500 })
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+  const galleryHeadingTop = await page.locator('.gallery-toolbar').evaluate((element) => element.getBoundingClientRect().top)
+  if (galleryHeadingTop >= 0) throw new Error(`Live shelf precondition failed: gallery heading top is ${galleryHeadingTop}`)
+  const liveBytes = await readFile(resolve('public', 'pwa-192x192.png'))
+  const liveChecksum = createHash('sha256').update(liveBytes).digest('hex')
+  const liveUpload = await json(`/rooms/${slug}/uploads`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${guestAuth.access_token}`, 'Idempotency-Key': crypto.randomUUID() },
+    body: JSON.stringify({ filename: 'guest-live-photo.png', mime_type: 'image/png', size_bytes: liveBytes.length, checksum: liveChecksum }),
+  })
+  const livePUT = await fetch(liveUpload.upload.url, { method: 'PUT', headers: liveUpload.upload.headers, body: liveBytes })
+  if (!livePUT.ok) throw new Error(`Live test object upload failed with ${livePUT.status}`)
+  await json(`/uploads/${liveUpload.upload.id}/complete`, {
+    method: 'POST', headers: { Authorization: `Bearer ${guestAuth.access_token}` }, body: JSON.stringify({ parts: [] }),
+  })
+  const newMediaShelf = page.locator('.new-media-shelf')
+  await newMediaShelf.getByText('Нових файлів: 1').waitFor({ timeout: 5000 })
+  const shelfButtonBox = await newMediaShelf.getByRole('button', { name: 'Показати' }).boundingBox()
+  if (!shelfButtonBox || shelfButtonBox.width < 44 || shelfButtonBox.height < 44) throw new Error(`New-media shelf touch target is too small: ${JSON.stringify(shelfButtonBox)}`)
+  await page.screenshot({ path: resolve(artifacts, 'new-media-shelf-375.png') })
+  await newMediaShelf.getByRole('button', { name: 'Показати' }).click()
+
   await page.setViewportSize({ width: 1440, height: 1000 })
-  await page.goto(baseURL, { waitUntil: 'networkidle' })
+  await page.goto(baseURL, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Мої кімнати' }).waitFor()
   await page.getByText('Mobile UX Updated').waitFor()
   await page.screenshot({ path: resolve(artifacts, 'home-1440.png'), fullPage: true })
@@ -313,7 +340,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

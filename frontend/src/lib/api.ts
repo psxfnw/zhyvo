@@ -93,6 +93,95 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
   return JSON.parse(body) as T
 }
 
+export type RoomRealtimeEvent = {
+  id: number
+  type: 'media_ready' | 'media_updated' | 'media_deleted' | 'favorite_changed' | 'room_updated' | 'members_changed'
+  entity_id?: string
+  created_at: string
+}
+
+type RealtimeCallbacks = {
+  onEvent: (event: RoomRealtimeEvent) => void
+  onConnected?: () => void
+  onDisconnected?: () => void
+  onAccessRevoked?: () => void
+}
+
+export async function streamRoomEvents(slug: string, callbacks: RealtimeCallbacks, signal: AbortSignal) {
+  let lastEventID = ''
+  let retryDelay = 1000
+  while (!signal.aborted) {
+    try {
+      const headers = new Headers({ Accept: 'text/event-stream' })
+      if (session?.access_token) headers.set('Authorization', `Bearer ${session.access_token}`)
+      if (lastEventID) headers.set('Last-Event-ID', lastEventID)
+      let response = await fetch(`/api/v1/rooms/${encodeURIComponent(slug)}/events`, { headers, signal })
+      if (response.status === 401 && session?.refresh_token) {
+        await refreshSession()
+        headers.set('Authorization', `Bearer ${session?.access_token ?? ''}`)
+        response = await fetch(`/api/v1/rooms/${encodeURIComponent(slug)}/events`, { headers, signal })
+      }
+      if (response.status === 403) {
+        callbacks.onAccessRevoked?.()
+        return
+      }
+      if (!response.ok || !response.body) throw new Error(`Realtime connection failed with ${response.status}`)
+
+      retryDelay = 1000
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (!signal.aborted) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let boundary = buffer.indexOf('\n\n')
+        while (boundary >= 0) {
+          const frame = buffer.slice(0, boundary)
+          buffer = buffer.slice(boundary + 2)
+          const fields = new Map<string, string>()
+          for (const line of frame.split('\n')) {
+            if (!line || line.startsWith(':')) continue
+            const separator = line.indexOf(':')
+            if (separator < 0) continue
+            fields.set(line.slice(0, separator), line.slice(separator + 1).trimStart())
+          }
+          const id = fields.get('id')
+          if (id) lastEventID = id
+          const eventType = fields.get('event')
+          const data = fields.get('data')
+          if (eventType === 'ready') callbacks.onConnected?.()
+          if (eventType === 'access_revoked') {
+            callbacks.onAccessRevoked?.()
+            return
+          }
+          if (eventType === 'room' && data) callbacks.onEvent(JSON.parse(data) as RoomRealtimeEvent)
+          boundary = buffer.indexOf('\n\n')
+        }
+      }
+      if (!signal.aborted) callbacks.onDisconnected?.()
+    } catch (cause) {
+      if (signal.aborted) return
+      callbacks.onDisconnected?.()
+      if (cause instanceof ApiError && cause.status === 401) return
+    }
+    if (signal.aborted) return
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      }
+      const timer = window.setTimeout(finish, retryDelay)
+      const onAbort = () => {
+        window.clearTimeout(timer)
+        finish()
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+    retryDelay = Math.min(retryDelay * 2, 8000)
+  }
+}
+
 export async function createAnonymous(displayName: string) {
   const next = await api<Session>('/auth/anonymous', {
     method: 'POST', auth: false, body: JSON.stringify({ display_name: displayName.trim(), client_type: 'web' }),

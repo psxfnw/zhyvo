@@ -34,7 +34,7 @@ import {
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { ApiError, archives, auth, ensureIdentity, getSession, media, rooms } from './lib/api'
+import { ApiError, archives, auth, ensureIdentity, getSession, media, rooms, streamRoomEvents } from './lib/api'
 import { bytes, errorMessage, normalizeSlug, remaining } from './lib/format'
 import { canShareFiles, fetchShareFile, isMobileDevice, saveRemoteFile, sharePreparedFiles } from './lib/download'
 import { getTelegramBootstrapError, getTelegramWebApp, openTelegramInvite, roomInviteLink, telegramBrowserLink, telegramRoomLink } from './lib/telegram'
@@ -883,6 +883,13 @@ function RoomPage() {
   const uploadsRef = useRef<UploadProgress[]>([])
   const uploadsHydratedKeyRef = useRef('')
   const galleryRefreshRef = useRef(false)
+  const galleryRefreshPendingRef = useRef(false)
+  const galleryRef = useRef<GalleryItem[]>([])
+  const galleryAnchorRef = useRef<HTMLElement>(null)
+  const announcedMediaRef = useRef(new Set<string>())
+  const roomRef = useRef<Room | null>(null)
+  const membersOpenRef = useRef(false)
+  const membersTabRef = useRef<'members' | 'activity'>('members')
   const loadedPastFirstPageRef = useRef(false)
   const settingsCloseRef = useRef<HTMLButtonElement>(null)
   const membersCloseRef = useRef<HTMLButtonElement>(null)
@@ -922,9 +929,16 @@ function RoomPage() {
   const [memberActionID, setMemberActionID] = useState<string | null>(null)
   const [membersLoading, setMembersLoading] = useState(false)
   const [membersError, setMembersError] = useState('')
+  const [realtimeConnected, setRealtimeConnected] = useState(false)
+  const [newMediaCount, setNewMediaCount] = useState(0)
   const selectedMediaID = searchParams.get('media')
+  const roomLoaded = room !== null
 
   useEffect(() => { uploadsRef.current = uploads }, [uploads])
+  useEffect(() => { galleryRef.current = gallery }, [gallery])
+  useEffect(() => { roomRef.current = room }, [room])
+  useEffect(() => { membersOpenRef.current = membersOpen }, [membersOpen])
+  useEffect(() => { membersTabRef.current = membersTab }, [membersTab])
 
   useEffect(() => {
     if (!room || !session) return
@@ -948,22 +962,33 @@ function RoomPage() {
   }, [slug])
 
   const refreshGallery = useCallback(async () => {
-    if (galleryRefreshRef.current) return
+    if (galleryRefreshRef.current) {
+      galleryRefreshPendingRef.current = true
+      return
+    }
     galleryRefreshRef.current = true
     try {
-      const page = await media.gallery(slug)
-      setGallery((current) => {
-        const freshIDs = new Set(page.items.map((item) => item.id))
-        if (current.length <= 50) return sortGallery(page.items)
-        return sortGallery([...page.items, ...current.slice(50).filter((item) => !freshIDs.has(item.id))])
-      })
-      if (!loadedPastFirstPageRef.current) {
-        setCursor(page.next_cursor)
-        setHasMore(page.has_more)
-      }
+      do {
+        galleryRefreshPendingRef.current = false
+        const page = await media.gallery(slug)
+        setGallery((current) => {
+          const freshIDs = new Set(page.items.map((item) => item.id))
+          if (current.length <= 50) return sortGallery(page.items)
+          return sortGallery([...page.items, ...current.slice(50).filter((item) => !freshIDs.has(item.id))])
+        })
+        if (!loadedPastFirstPageRef.current) {
+          setCursor(page.next_cursor)
+          setHasMore(page.has_more)
+        }
+      } while (galleryRefreshPendingRef.current)
     } finally {
       galleryRefreshRef.current = false
     }
+  }, [slug])
+
+  const refreshRoom = useCallback(async () => {
+    const result = await rooms.get(slug)
+    setRoom(result.room)
   }, [slug])
 
   useEffect(() => {
@@ -996,12 +1021,51 @@ function RoomPage() {
   }, [slug, loadGallery])
 
   useEffect(() => {
+    if (!session || !roomLoaded) return
+    const controller = new AbortController()
+    void streamRoomEvents(slug, {
+      onConnected: () => setRealtimeConnected(true),
+      onDisconnected: () => setRealtimeConnected(false),
+      onAccessRevoked: () => navigate('/', { replace: true }),
+      onEvent: (event) => {
+        if (event.type === 'media_ready' && event.entity_id && !galleryRef.current.some((item) => item.id === event.entity_id)) {
+          const pastGalleryHeading = (galleryAnchorRef.current?.getBoundingClientRect().top ?? 1) < 0
+          if (pastGalleryHeading && !announcedMediaRef.current.has(event.entity_id)) {
+            announcedMediaRef.current.add(event.entity_id)
+            setNewMediaCount((count) => count + 1)
+          }
+        }
+        if (['media_ready', 'media_updated', 'media_deleted', 'favorite_changed'].includes(event.type)) {
+          void refreshGallery().catch(() => undefined)
+        }
+        if (['media_ready', 'media_deleted', 'room_updated', 'members_changed'].includes(event.type)) {
+          void refreshRoom().catch(() => undefined)
+        }
+        if (event.type === 'members_changed' && roomRef.current?.role === 'owner' && membersOpenRef.current) {
+          void Promise.all([
+            rooms.members(slug),
+            membersTabRef.current === 'activity' ? rooms.activity(slug) : Promise.resolve(null),
+          ]).then(([memberResult, activityResult]) => {
+            setMembers(memberResult.members)
+            setBlockedMembers(memberResult.blocked_members)
+            if (activityResult) setActivity(activityResult.events)
+          }).catch(() => undefined)
+        }
+      },
+    }, controller.signal)
+    return () => {
+      controller.abort()
+      setRealtimeConnected(false)
+    }
+  }, [navigate, refreshGallery, refreshRoom, roomLoaded, session, slug])
+
+  useEffect(() => {
     if (!room) return
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') void refreshGallery().catch(() => undefined)
-    }, 8000)
+    }, realtimeConnected ? 60_000 : 8000)
     return () => window.clearInterval(interval)
-  }, [refreshGallery, room])
+  }, [realtimeConnected, refreshGallery, room])
 
   useEffect(() => {
     if (!roomArchive || !['pending', 'processing'].includes(roomArchive.status)) return
@@ -1539,7 +1603,19 @@ function RoomPage() {
 
       {error && <div className="page-error" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="Закрити"><X size={17} /></button></div>}
 
-      <section className="gallery-toolbar">
+      {newMediaCount > 0 && (
+        <aside className="new-media-shelf" aria-live="polite">
+          <Images size={18} />
+          <strong>Нових файлів: {newMediaCount}</strong>
+          <button onClick={() => {
+            setNewMediaCount(0)
+            announcedMediaRef.current.clear()
+            galleryAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          }}>Показати</button>
+        </aside>
+      )}
+
+      <section ref={galleryAnchorRef} className="gallery-toolbar">
         <div><h2>Галерея</h2><p>{bytes(room.used_storage_bytes)} використано</p></div>
         <div className="gallery-toolbar__actions">
           {gallery.length > 0 && (

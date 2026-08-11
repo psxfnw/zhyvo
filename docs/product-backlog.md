@@ -1,5 +1,11 @@
 # Product backlog
 
+## Live room synchronization
+
+Status: implemented in preview.
+
+PostgreSQL stores room changes in a durable, room-scoped event log and emits a transactional notification after commit. Each API process keeps one `LISTEN` connection and fans wake-ups only to subscribers of the affected room. Authenticated SSE clients resume with `Last-Event-ID`, receive heartbeats through buffering-disabled Nginx, and fall back to periodic gallery refresh when disconnected. Media, thumbnails, favorites, room settings, covers, and membership changes update without reloading; a compact shelf announces new files without moving someone who is browsing older frames.
+
 ## Favorite frames and room cover
 
 Status: implemented in preview.

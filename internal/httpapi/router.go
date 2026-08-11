@@ -12,6 +12,7 @@ import (
 	"photodrop/internal/auth"
 	"photodrop/internal/media"
 	"photodrop/internal/objectstore"
+	"photodrop/internal/realtime"
 	"photodrop/internal/room"
 	"photodrop/internal/roomarchive"
 )
@@ -24,6 +25,8 @@ type Dependencies struct {
 	RoomService         *room.Service
 	MediaService        *media.Service
 	ArchiveService      *roomarchive.Service
+	RealtimeService     *realtime.Service
+	RealtimeBroker      *realtime.Broker
 	TelegramBotToken    string
 	TelegramBotUsername string
 	TelegramInitDataTTL time.Duration
@@ -82,6 +85,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 	roomAPI := roomHandler{service: dependencies.RoomService}
 	uploadAPI := uploadHandler{service: dependencies.MediaService}
 	archiveAPI := archiveHandler{service: dependencies.ArchiveService}
+	realtimeAPI := realtimeHandler{service: dependencies.RealtimeService, broker: dependencies.RealtimeBroker, auth: dependencies.AuthService}
 	router.Get("/api/v1/rooms/{slug}/preview", roomAPI.preview)
 	router.Get("/invite/{slug}", inviteHandler{rooms: dependencies.RoomService, botUsername: dependencies.TelegramBotUsername}.show)
 	router.Group(func(router chi.Router) {
@@ -104,6 +108,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		router.Post("/api/v1/uploads/{uploadID}/complete", uploadAPI.complete)
 		router.Delete("/api/v1/uploads/{uploadID}", uploadAPI.abort)
 		router.Get("/api/v1/rooms/{slug}/media", uploadAPI.gallery)
+		router.Get("/api/v1/rooms/{slug}/events", realtimeAPI.events)
 		router.Put("/api/v1/media/{mediaID}/favorite", uploadAPI.favorite)
 		router.Delete("/api/v1/media/{mediaID}/favorite", uploadAPI.favorite)
 		router.Put("/api/v1/rooms/{slug}/cover", uploadAPI.setCover)

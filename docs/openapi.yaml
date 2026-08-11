@@ -605,6 +605,35 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '422': {$ref: '#/components/responses/ValidationError'}
 
+  /rooms/{slug}/events:
+    get:
+      operationId: streamRoomEvents
+      tags: [Rooms]
+      summary: Stream durable room changes using Server-Sent Events
+      description: |
+        Sends an initial `ready` event followed by `room` events. Clients reconnect
+        with `Last-Event-ID`; heartbeat comments keep idle proxies from closing the
+        connection. The stream ends when room access is revoked or expires.
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema: {type: integer, format: int64, minimum: 0}
+      responses:
+        '200':
+          description: SSE stream of room events
+          headers:
+            Cache-Control:
+              schema: {type: string, const: 'no-cache, no-transform'}
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE frames whose room-event data matches RoomRealtimeEvent
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /media/{mediaID}/download-url:
     post:
       operationId: getMediaDownloadURL
@@ -1094,6 +1123,17 @@ components:
           items: {$ref: '#/components/schemas/GalleryItem'}
         next_cursor: {type: [string, 'null']}
         has_more: {type: boolean}
+
+    RoomRealtimeEvent:
+      type: object
+      required: [id, type, created_at]
+      properties:
+        id: {type: integer, format: int64}
+        type:
+          type: string
+          enum: [media_ready, media_updated, media_deleted, favorite_changed, room_updated, members_changed]
+        entity_id: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
 
     Download:
       type: object

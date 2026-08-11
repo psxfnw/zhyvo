@@ -51,12 +51,17 @@ This changes name resolution only inside the launched test browser and does not 
 - Verify Telegram notifications only after the owner explicitly enables them.
 - For a room with less than six hours remaining, verify every member sees the exact deletion warning and can start the device-appropriate save flow.
 - Enable Telegram notifications and confirm the outbox contains one deadline-scoped reminder for six hours and one for one hour; disabling notifications removes unsent expiry reminders.
+- Open `Повідомити про проблему`, submit at least ten characters, and verify the returned `ZHY-…` reference. Disable technical context once and confirm no device or route fields are stored.
+- Submit a report from a room and an invite route; confirm stored routes are `/r/:room` and `/i/:invite`, with no room code or token.
+- Confirm an ordinary Telegram identity receives `403` for `/api/v1/admin/*`, while an ID from `ADMIN_TELEGRAM_IDS` can open the metrics and report queue.
+- Confirm the configured administrator receives the bot notification and its button opens the same report in the Mini App.
 
 ## Operational checks
 
 - `docker compose --profile preview ps` shows healthy `api` and `frontend` services.
 - `http://localhost:8080/health/ready` returns ready.
 - No bot token, OIDC secret, Tailscale auth key, or real `.env` file is tracked by Git.
+- `ADMIN_TELEGRAM_IDS` contains only intended administrators and is never exposed to the frontend bundle.
 - PostgreSQL and object-storage volumes are backed up before any destructive migration.
 - The preview limitation is understood: the public URL stops when this PC or Docker Desktop is off.
 - Nginx keeps buffering disabled for `/api/v1/rooms/{slug}/events`; otherwise SSE updates may arrive in delayed batches.

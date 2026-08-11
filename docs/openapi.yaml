@@ -18,6 +18,10 @@ tags:
     description: Direct single and multipart object-storage uploads
   - name: Media
     description: Gallery, original downloads, and media deletion
+  - name: Support
+    description: Privacy-safe problem reports
+  - name: Admin
+    description: Telegram-allowlisted internal operations
 
 paths:
   /auth/anonymous:
@@ -213,6 +217,125 @@ paths:
       responses:
         '204': {description: Session revoked}
         '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /problem-reports:
+    post:
+      operationId: createProblemReport
+      tags: [Support]
+      summary: Submit a rate-limited problem report with optional technical context
+      security: [{}, {bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [category, description, technical_context]
+              properties:
+                category: {type: string, enum: [upload, download, room, telegram, other]}
+                description: {type: string, minLength: 10, maxLength: 2000}
+                contact: {type: string, maxLength: 160}
+                technical_context: {$ref: '#/components/schemas/ProblemReportContext'}
+      responses:
+        '201':
+          description: Report saved and assigned a public reference
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [report]
+                properties:
+                  report: {$ref: '#/components/schemas/ProblemReport'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /admin/stats:
+    get:
+      operationId: getAdminStats
+      tags: [Admin]
+      summary: Get current aggregate product metrics
+      responses:
+        '200':
+          description: Current PostgreSQL-backed product totals
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminStats'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /admin/problem-reports:
+    get:
+      operationId: listProblemReports
+      tags: [Admin]
+      summary: List up to 100 reports for a Telegram-allowlisted administrator
+      parameters:
+        - name: status
+          in: query
+          schema: {type: string, enum: [new, in_progress, resolved, closed]}
+        - name: category
+          in: query
+          schema: {type: string, enum: [upload, download, room, telegram, other]}
+      responses:
+        '200':
+          description: Report queue
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reports]
+                properties:
+                  reports: {type: array, items: {$ref: '#/components/schemas/ProblemReport'}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /admin/problem-reports/{reportID}:
+    parameters:
+      - name: reportID
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: getProblemReport
+      tags: [Admin]
+      summary: Get one report
+      responses:
+        '200':
+          description: Report details
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [report]
+                properties:
+                  report: {$ref: '#/components/schemas/ProblemReport'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateProblemReport
+      tags: [Admin]
+      summary: Change report status and internal note
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status, admin_note]
+              properties:
+                status: {type: string, enum: [new, in_progress, resolved, closed]}
+                admin_note: {type: string, maxLength: 2000}
+      responses:
+        '200':
+          description: Updated report
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [report]
+                properties:
+                  report: {$ref: '#/components/schemas/ProblemReport'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
 
   /rooms:
     get:
@@ -1041,6 +1164,7 @@ components:
         id: {type: string, format: uuid}
         kind: {type: string, enum: [anonymous, telegram, account]}
         display_name: {type: string, minLength: 1, maxLength: 80}
+        telegram_user_id: {type: integer, format: int64, description: Present only for the authenticated user's own Telegram identity}
 
     AnonymousAuthRequest:
       type: object
@@ -1385,6 +1509,50 @@ components:
           enum: [media_ready, media_updated, media_deleted, favorite_changed, room_updated, members_changed]
         entity_id: {type: string, format: uuid}
         created_at: {type: string, format: date-time}
+
+    ProblemReportContext:
+      type: object
+      additionalProperties: false
+      properties:
+        route: {type: string, maxLength: 160, description: Server-sanitized route without room codes, invitation tokens, or query parameters}
+        app_build: {type: string, maxLength: 80}
+        platform: {type: string, maxLength: 120}
+        browser: {type: string, maxLength: 500}
+        telegram: {type: boolean}
+        online: {type: boolean}
+        error_code: {type: string, maxLength: 80}
+        request_id: {type: string, maxLength: 100}
+        occurred_at: {type: string, format: date-time}
+
+    ProblemReport:
+      type: object
+      required: [id, public_id, category, description, technical_context, status, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        public_id: {type: string, pattern: '^ZHY-[A-Z2-7]{8}$'}
+        category: {type: string, enum: [upload, download, room, telegram, other]}
+        description: {type: string, minLength: 10, maxLength: 2000}
+        contact: {type: string, maxLength: 160}
+        technical_context: {$ref: '#/components/schemas/ProblemReportContext'}
+        status: {type: string, enum: [new, in_progress, resolved, closed]}
+        admin_note: {type: string, maxLength: 2000}
+        reporter_name: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        resolved_at: {type: string, format: date-time}
+
+    AdminStats:
+      type: object
+      required: [active_rooms, ready_media, stored_bytes, total_users, new_reports, reports_today, uploads_today, new_users_today]
+      properties:
+        active_rooms: {type: integer, minimum: 0}
+        ready_media: {type: integer, minimum: 0}
+        stored_bytes: {type: integer, format: int64, minimum: 0}
+        total_users: {type: integer, minimum: 0}
+        new_reports: {type: integer, minimum: 0}
+        reports_today: {type: integer, minimum: 0}
+        uploads_today: {type: integer, minimum: 0}
+        new_users_today: {type: integer, minimum: 0}
 
     Download:
       type: object

@@ -4,6 +4,8 @@ import {
   Archive,
   ArrowLeft,
   Ban,
+  BarChart3,
+  Bug,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -15,6 +17,7 @@ import {
   FileImage,
   ImagePlus,
   Images,
+  Inbox,
   Heart,
   LockKeyhole,
   LogIn,
@@ -37,7 +40,7 @@ import {
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { ApiError, archives, auth, ensureIdentity, getSession, media, rooms, streamRoomEvents } from './lib/api'
+import { admin, ApiError, archives, auth, ensureIdentity, getLastAPIErrorContext, getSession, media, problemReports, rooms, streamRoomEvents } from './lib/api'
 import { bytes, errorMessage, normalizeSlug, remaining } from './lib/format'
 import { canShareFiles, fetchShareFile, isMobileDevice, saveRemoteFile, sharePreparedFiles } from './lib/download'
 import { getTelegramBootstrapError, getTelegramWebApp, managedBrowserInviteLink, managedInviteLink, openTelegramInvite, roomInviteLink, telegramBrowserLink, telegramInviteLink, telegramRoomLink } from './lib/telegram'
@@ -46,7 +49,7 @@ import { loadUploadQueue, saveUploadQueue } from './lib/uploadQueue'
 import { mediaCapturedAt } from './lib/metadata'
 import { checksumFile } from './lib/checksum'
 import { completeTelegramLogin, startTelegramLogin } from './lib/telegramLogin'
-import type { AccessMode, BlockedRoomMember, GalleryItem, Room, RoomActivityEvent, RoomArchive, RoomInvite, RoomInviteList, RoomInvitePreview, RoomMember, RoomNotificationSettings, RoomPreview, RoomRecap, Session, UploadProgress } from './types'
+import type { AccessMode, AdminStats, BlockedRoomMember, GalleryItem, ProblemReport, ProblemReportCategory, ProblemReportStatus, Room, RoomActivityEvent, RoomArchive, RoomInvite, RoomInviteList, RoomInvitePreview, RoomMember, RoomNotificationSettings, RoomPreview, RoomRecap, Session, UploadProgress } from './types'
 
 function uuid() {
   return crypto.randomUUID()
@@ -138,6 +141,80 @@ function Brand({ compact = false }: { compact?: boolean }) {
       <span>Zhyvo</span>
     </Link>
   )
+}
+
+const reportCategoryLabels: Record<ProblemReportCategory, string> = {
+  upload: 'Завантаження', download: 'Збереження', room: 'Кімната або запрошення', telegram: 'Telegram', other: 'Інше',
+}
+
+const reportStatusLabels: Record<ProblemReportStatus, string> = {
+  new: 'Нове', in_progress: 'У роботі', resolved: 'Вирішено', closed: 'Закрито',
+}
+
+function ProblemReportDialog({ onClose }: { onClose: () => void }) {
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const [category, setCategory] = useState<ProblemReportCategory>('other')
+  const [description, setDescription] = useState('')
+  const [contact, setContact] = useState('')
+  const [includeTechnical, setIncludeTechnical] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [publicID, setPublicID] = useState('')
+
+  useEffect(() => {
+    closeRef.current?.focus()
+    const keydown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    document.addEventListener('keydown', keydown)
+    return () => document.removeEventListener('keydown', keydown)
+  }, [onClose])
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    const lastError = getLastAPIErrorContext()
+    try {
+      const result = await problemReports.create({
+        category,
+        description,
+        contact: contact.trim() || undefined,
+        technical_context: includeTechnical ? {
+          route: window.location.pathname,
+          app_build: import.meta.env.VITE_APP_VERSION || import.meta.env.MODE,
+          platform: getTelegramWebApp()?.platform || navigator.platform || 'web',
+          browser: navigator.userAgent,
+          telegram: Boolean(getTelegramWebApp()),
+          online: navigator.onLine,
+          error_code: lastError?.code,
+          request_id: lastError?.request_id,
+          occurred_at: lastError?.occurred_at,
+        } : {},
+      })
+      setPublicID(result.report.public_id)
+      getTelegramWebApp()?.HapticFeedback?.impactOccurred('medium')
+    } catch (cause) { setError(errorMessage(cause)) } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="dialog-backdrop problem-report-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="problem-report-dialog" role="dialog" aria-modal="true" aria-labelledby="problem-report-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header><div><p className="eyebrow">Зворотний зв’язок</p><h2 id="problem-report-title">Повідомити про проблему</h2></div><button ref={closeRef} className="icon-button" onClick={onClose} aria-label="Закрити"><X /></button></header>
+        {publicID ? <div className="problem-report-success"><ShieldCheck size={48} /><h3>Звернення отримано</h3><p>Ми зберегли його під номером <strong>{publicID}</strong>.</p><button className="primary-button" onClick={onClose}>Готово</button></div> : <form onSubmit={submit}>
+          <label className="field"><span>Що не працює</span><select value={category} onChange={(event) => setCategory(event.target.value as ProblemReportCategory)}>{Object.entries(reportCategoryLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+          <label className="field"><span>Опишіть проблему</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} minLength={10} maxLength={2000} required placeholder="Що ви робили та що сталося?" /><small>{description.length} / 2000</small></label>
+          <label className="field"><span>Контакт для відповіді — необов’язково</span><input value={contact} onChange={(event) => setContact(event.target.value)} maxLength={160} placeholder="@username або email" /></label>
+          <label className="technical-consent"><input type="checkbox" checked={includeTechnical} onChange={(event) => setIncludeTechnical(event.target.checked)} /><span><strong>Додати технічну інформацію</strong><small>Сторінка, пристрій, версія Zhyvo та код останньої помилки. Без фото, паролів, токенів і назв файлів.</small></span></label>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="primary-button" disabled={busy || description.trim().length < 10}><Bug size={18} /> {busy ? 'Надсилаємо…' : 'Надіслати звернення'}</button>
+        </form>}
+      </section>
+    </div>
+  )
+}
+
+function ProblemReporter() {
+  const [open, setOpen] = useState(false)
+  return <><button className="problem-report-trigger" onClick={() => setOpen(true)}><Bug size={16} /> Повідомити про проблему</button>{open && <ProblemReportDialog onClose={() => setOpen(false)} />}</>
 }
 
 function ProfileChip({ session }: { session: Session }) {
@@ -2180,12 +2257,108 @@ function RoomPage() {
   )
 }
 
+function AdminPage() {
+  const session = useSession()
+  const navigate = useNavigate()
+  const { reportID } = useParams()
+  const [stats, setStats] = useState<AdminStats | null>(null)
+  const [reports, setReports] = useState<ProblemReport[]>([])
+  const [selected, setSelected] = useState<ProblemReport | null>(null)
+  const [statusFilter, setStatusFilter] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('')
+  const [status, setStatus] = useState<ProblemReportStatus>('new')
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [forbidden, setForbidden] = useState(false)
+  const [telegramID, setTelegramID] = useState<number | null>(session?.identity.telegram_user_id ?? null)
+  const [idCopied, setIDCopied] = useState(false)
+
+  useEffect(() => {
+    if (session?.identity.kind !== 'telegram' || telegramID) return
+    auth.me().then((result) => setTelegramID(result.identity.telegram_user_id ?? null)).catch(() => undefined)
+  }, [session, telegramID])
+
+  const load = useCallback(async (quiet = false) => {
+    if (!session) return
+    if (!quiet) setBusy(true)
+    try {
+      const [statsResult, listResult, detailResult] = await Promise.all([
+        admin.stats(), admin.reports({ status: statusFilter, category: categoryFilter }), reportID ? admin.report(reportID) : Promise.resolve(null),
+      ])
+      setStats(statsResult)
+      setReports(listResult.reports)
+      if (detailResult) {
+        setSelected(detailResult.report)
+        setStatus(detailResult.report.status)
+        setNote(detailResult.report.admin_note ?? '')
+      } else setSelected((current) => current && !listResult.reports.some((report) => report.id === current.id) ? null : current)
+      setForbidden(false)
+      setError('')
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 403) setForbidden(true)
+      else setError(errorMessage(cause))
+    } finally { if (!quiet) setBusy(false) }
+  }, [categoryFilter, reportID, session, statusFilter])
+
+  useEffect(() => { void load(); const timer = window.setInterval(() => void load(true), 15_000); return () => window.clearInterval(timer) }, [load])
+
+  function openReport(report: ProblemReport) {
+    setSelected(report)
+    setStatus(report.status)
+    setNote(report.admin_note ?? '')
+    navigate(`/admin/reports/${report.id}`)
+  }
+
+  async function saveReport() {
+    if (!selected) return
+    setBusy(true)
+    try {
+      const result = await admin.updateReport(selected.id, status, note)
+      setSelected(result.report)
+      setReports((current) => current.map((report) => report.id === result.report.id ? result.report : report))
+      await load(true)
+    } catch (cause) { setError(errorMessage(cause)) } finally { setBusy(false) }
+  }
+
+  if (!session) return <main className="admin-gate"><Brand /><BarChart3 size={52} /><h1>Панель Zhyvo</h1><p>Відкрийте панель із повідомлення бота або спочатку підключіть Telegram на головній.</p><Link className="primary-button" to="/">На головну</Link></main>
+  if (session.identity.kind !== 'telegram') return <main className="admin-gate"><Brand /><ShieldCheck size={52} /><h1>Потрібен Telegram</h1><p>Адміністративний доступ перевіряється за вашим Telegram ID.</p><button className="primary-button" onClick={() => navigate(`/auth/telegram/link?returnTo=${encodeURIComponent(location.pathname)}`)}><Send size={18} /> Підключити Telegram</button></main>
+  if (forbidden) return <main className="admin-gate"><Brand /><Ban size={52} /><h1>Доступ закрито</h1><p>Цей Telegram-акаунт не входить до списку адміністраторів Zhyvo.</p>{telegramID && <div className="admin-own-id"><span>Ваш Telegram ID</span><strong>{telegramID}</strong><button onClick={async () => { await navigator.clipboard.writeText(String(telegramID)); setIDCopied(true) }}>{idCopied ? <Check size={16} /> : <Copy size={16} />}{idCopied ? 'Скопійовано' : 'Скопіювати'}</button></div>}<Link className="primary-button" to="/">На головну</Link></main>
+
+  return <main className="admin-shell">
+    <header className="admin-topbar"><Brand compact /><div><span>Внутрішня панель</span><strong>{session.identity.display_name}</strong></div><Link to="/">Відкрити Zhyvo</Link></header>
+    <section className="admin-heading"><div><p className="eyebrow">Стан продукту</p><h1>Операційна панель</h1></div><button className="secondary-button" onClick={() => void load()} disabled={busy}><RefreshCw size={17} /> Оновити</button></section>
+    {stats && <section className="admin-stats" aria-label="Показники Zhyvo">
+      <div><strong>{stats.active_rooms}</strong><span>активних кімнат</span><small>зараз</small></div>
+      <div><strong>{stats.ready_media}</strong><span>готових файлів</span><small>+{stats.uploads_today} сьогодні</small></div>
+      <div><strong>{stats.total_users}</strong><span>користувачів</span><small>+{stats.new_users_today} сьогодні</small></div>
+      <div><strong>{bytes(stats.stored_bytes)}</strong><span>оригіналів</span><small>у сховищі</small></div>
+      <div className={stats.new_reports ? 'is-alert' : ''}><strong>{stats.new_reports}</strong><span>нових звернень</span><small>{stats.reports_today} сьогодні</small></div>
+    </section>}
+    {error && <p className="form-error admin-error" role="alert">{error}</p>}
+    <section className="admin-workspace">
+      <div className="admin-inbox">
+        <header><div><Inbox size={21} /><h2>Звернення</h2></div><span>{reports.length}</span></header>
+        <div className="admin-filters"><label><span>Статус</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">Усі</option>{Object.entries(reportStatusLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label><span>Категорія</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="">Усі</option>{Object.entries(reportCategoryLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label></div>
+        <div className="admin-report-list">{busy && !stats ? <div className="loading-line" /> : reports.length ? reports.map((report) => <button className={selected?.id === report.id ? 'is-active' : ''} onClick={() => openReport(report)} key={report.id}><span className={`report-status report-status--${report.status}`}>{reportStatusLabels[report.status]}</span><strong>{report.public_id}</strong><p>{report.description}</p><small>{reportCategoryLabels[report.category]} · {new Date(report.created_at).toLocaleString('uk-UA', { dateStyle: 'short', timeStyle: 'short' })}</small></button>) : <div className="admin-empty"><Check size={34} /><strong>Звернень немає</strong><span>За вибраними фільтрами нічого не знайдено.</span></div>}</div>
+      </div>
+      <div className="admin-detail">{selected ? <>
+        <header><div><span className={`report-status report-status--${selected.status}`}>{reportStatusLabels[selected.status]}</span><h2>{selected.public_id}</h2></div><button className="icon-button" onClick={() => { setSelected(null); navigate('/admin/reports') }} aria-label="Закрити звернення"><X /></button></header>
+        <div className="admin-report-copy"><p>{selected.description}</p><dl><div><dt>Категорія</dt><dd>{reportCategoryLabels[selected.category]}</dd></div><div><dt>Створено</dt><dd>{new Date(selected.created_at).toLocaleString('uk-UA', { dateStyle: 'long', timeStyle: 'short' })}</dd></div><div><dt>Автор</dt><dd>{selected.reporter_name ?? 'Анонімний відвідувач'}</dd></div><div><dt>Контакт</dt><dd>{selected.contact ?? 'Не вказано'}</dd></div></dl></div>
+        <section className="admin-context"><h3>Технічна інформація</h3><dl>{Object.entries(selected.technical_context).map(([key, value]) => <div key={key}><dt>{({ route: 'Сторінка', app_build: 'Збірка', platform: 'Платформа', browser: 'Браузер', telegram: 'Telegram Mini App', online: 'Мережа', error_code: 'Код помилки', request_id: 'Request ID', occurred_at: 'Час помилки' } as Record<string, string>)[key] ?? key}</dt><dd>{typeof value === 'boolean' ? value ? 'Так' : 'Ні' : String(value)}</dd></div>)}</dl></section>
+        <div className="admin-resolution"><label className="field"><span>Статус</span><select value={status} onChange={(event) => setStatus(event.target.value as ProblemReportStatus)}>{Object.entries(reportStatusLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label className="field"><span>Внутрішня нотатка</span><textarea maxLength={2000} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Що перевірено або виправлено" /></label><button className="primary-button" disabled={busy} onClick={() => void saveReport()}>{busy ? 'Зберігаємо…' : 'Зберегти зміни'}</button></div>
+      </> : <div className="admin-detail-empty"><Inbox size={52} /><h2>Виберіть звернення</h2><p>Тут з’явиться опис, безпечний технічний контекст і робоча нотатка.</p></div>}</div>
+    </section>
+  </main>
+}
+
 export default function App() {
   const telegramError = getTelegramBootstrapError()
   return (
     <>
       <TelegramNavigation />
       {telegramError && <div className="telegram-error" role="alert">{telegramError}</div>}
+      <ProblemReporter />
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/r/:slug" element={<RoomPage />} />
@@ -2194,6 +2367,8 @@ export default function App() {
         <Route path="/auth/telegram/callback" element={<TelegramLoginCallback />} />
 		<Route path="/auth/telegram/link" element={<BrowserLinkPage />} />
 		<Route path="/auth/telegram/link-confirm" element={<TelegramLinkConfirmPage />} />
+        <Route path="/admin/reports" element={<AdminPage />} />
+        <Route path="/admin/reports/:reportID" element={<AdminPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </>

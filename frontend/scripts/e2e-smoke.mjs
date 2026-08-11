@@ -107,6 +107,20 @@ try {
 
   await page.goto(baseURL, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Мої кімнати' }).waitFor()
+  await page.getByRole('button', { name: 'Повідомити про проблему' }).click()
+  const problemDialog = page.getByRole('dialog', { name: 'Повідомити про проблему' })
+  await problemDialog.waitFor()
+  await problemDialog.getByLabel('Що не працює').selectOption('upload')
+  await problemDialog.getByLabel('Опишіть проблему').fill('Тестовий опис проблеми із завантаженням')
+  await problemDialog.getByText('Без фото, паролів, токенів і назв файлів.').waitFor()
+  await page.screenshot({ path: resolve(artifacts, 'problem-report-375.png') })
+  await problemDialog.getByRole('button', { name: 'Закрити' }).click()
+  const adminReportID = crypto.randomUUID()
+  await page.goto(`${baseURL}/?tgWebAppStartParam=admin_report_${adminReportID}`, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Потрібен Telegram' }).waitFor()
+  if (new URL(page.url()).pathname !== `/admin/reports/${adminReportID}`) throw new Error('Admin report deep link did not route to the report')
+  await page.goto(baseURL, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('heading', { name: 'Мої кімнати' }).waitFor()
   await page.evaluate((roomSlug) => {
     window.history.pushState({ usr: { justCreated: true }, key: 'e2e-activation', idx: 1 }, '', `/r/${roomSlug}`)
     window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
@@ -473,7 +487,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, roomActivation: true, expiryWarning: true, managedInvites: true, viewerPermission: true, inviteRevocation: true, recap: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, problemReport: true, adminDeepLink: true, roomActivation: true, expiryWarning: true, managedInvites: true, viewerPermission: true, inviteRevocation: true, recap: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

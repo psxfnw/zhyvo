@@ -131,9 +131,10 @@ Frontend автоматично визначає запуск усередині
 ```env
 TELEGRAM_BOT_TOKEN=123456789:replace_with_real_token
 TELEGRAM_INIT_DATA_TTL=10m
+ADMIN_TELEGRAM_IDS=123456789
 ```
 
-Токен не можна додавати до `frontend/`, Vite-змінних або Git. Покрокове підключення бота описане в `docs/telegram-mini-app.md`.
+`ADMIN_TELEGRAM_IDS` — це один або кілька числових Telegram ID через кому. Лише ці акаунти можуть відкрити `/admin/reports` і отримують від бота повідомлення про нові звернення. Токен та список адміністраторів не можна додавати до `frontend/`, Vite-змінних або Git. Покрокове підключення бота описане в `docs/telegram-mini-app.md`.
 
 ## Media pipeline
 

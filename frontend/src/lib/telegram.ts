@@ -52,6 +52,11 @@ export function getTelegramStartParam(candidate = window.Telegram?.WebApp) {
 }
 
 function applyTelegramStartRoute(startParam: string) {
+	const adminReportID = startParam.match(/^admin_report_([0-9a-f-]{36})$/i)?.[1]
+	if (location.pathname === '/' && adminReportID) {
+		history.replaceState(history.state, '', `/admin/reports/${encodeURIComponent(adminReportID)}`)
+		return
+	}
 	const linkToken = startParam.match(/^link_([A-Za-z0-9_-]{43})$/)?.[1]
 	if (location.pathname === '/' && linkToken) {
 		history.replaceState(history.state, '', `/auth/telegram/link-confirm?token=${encodeURIComponent(linkToken)}`)

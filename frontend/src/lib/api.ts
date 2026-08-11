@@ -1,4 +1,4 @@
-import type { AccessMode, BlockedRoomMember, GalleryItem, GalleryPage, Identity, Room, RoomActivityEvent, RoomArchive, RoomInvite, RoomInviteList, RoomInvitePreview, RoomMember, RoomNotificationSettings, RoomPreview, RoomRecap, Session, UploadTicket } from '../types'
+import type { AccessMode, AdminStats, BlockedRoomMember, GalleryItem, GalleryPage, Identity, ProblemReport, ProblemReportCategory, ProblemReportContext, ProblemReportStatus, Room, RoomActivityEvent, RoomArchive, RoomInvite, RoomInviteList, RoomInvitePreview, RoomMember, RoomNotificationSettings, RoomPreview, RoomRecap, Session, UploadTicket } from '../types'
 
 const SESSION_KEY = 'photodrop.session.v1'
 
@@ -7,9 +7,16 @@ export class ApiError extends Error {
     public status: number,
     public code: string,
     message: string,
+    public requestId?: string,
   ) {
     super(message)
   }
+}
+
+let lastAPIError: { code: string; request_id?: string; occurred_at: string } | null = null
+
+export function getLastAPIErrorContext() {
+  return lastAPIError
 }
 
 function loadStoredSession(): Session | null {
@@ -39,13 +46,15 @@ function saveSession(next: Session | null) {
 async function parseError(response: Response) {
   const fallback = `Запит завершився з кодом ${response.status}`
   try {
-    const body = await response.json() as { error?: { code?: string; message?: string } }
+    const body = await response.json() as { error?: { code?: string; message?: string; request_id?: string } }
     const code = body.error?.code ?? 'REQUEST_FAILED'
     const message = code === 'AUTH_REQUIRED'
       ? 'Сесію завершено. Закрийте й повторно відкрийте Zhyvo.'
       : body.error?.message ?? fallback
-    return new ApiError(response.status, code, message)
+    lastAPIError = { code, request_id: body.error?.request_id, occurred_at: new Date().toISOString() }
+    return new ApiError(response.status, code, message, body.error?.request_id)
   } catch {
+    lastAPIError = { code: 'REQUEST_FAILED', occurred_at: new Date().toISOString() }
     return new ApiError(response.status, 'REQUEST_FAILED', fallback)
   }
 }
@@ -210,6 +219,7 @@ export async function ensureIdentity(displayName: string) {
 }
 
 export const auth = {
+  me: () => api<{ identity: Identity }>('/auth/me'),
   telegramConfig: () => api<{ enabled: boolean; client_id: string }>('/auth/telegram/config', { auth: false }),
   linkTelegram: async (input: { code: string; code_verifier: string; nonce: string }) => {
     const next = await api<Session>('/auth/telegram/oidc', { method: 'POST', body: JSON.stringify(input) })
@@ -310,6 +320,23 @@ export const archives = {
   request: (slug: string) => api<{ archive: RoomArchive }>(`/rooms/${slug}/archive`, { method: 'POST' }),
   get: (id: string) => api<{ archive: RoomArchive }>(`/archives/${id}`),
   download: (id: string) => api<{ url: string; filename: string; expires_at: string }>(`/archives/${id}/download-url`, { method: 'POST' }),
+}
+
+export const problemReports = {
+  create: (input: { category: ProblemReportCategory; description: string; contact?: string; technical_context: ProblemReportContext }) =>
+    api<{ report: ProblemReport }>('/problem-reports', { method: 'POST', body: JSON.stringify(input) }),
+}
+
+export const admin = {
+  stats: () => api<AdminStats>('/admin/stats'),
+  reports: (filters: { status?: string; category?: string } = {}) => {
+    const query = new URLSearchParams()
+    if (filters.status) query.set('status', filters.status)
+    if (filters.category) query.set('category', filters.category)
+    return api<{ reports: ProblemReport[] }>(`/admin/problem-reports${query.size ? `?${query}` : ''}`)
+  },
+  report: (id: string) => api<{ report: ProblemReport }>(`/admin/problem-reports/${encodeURIComponent(id)}`),
+  updateReport: (id: string, status: ProblemReportStatus, adminNote: string) => api<{ report: ProblemReport }>(`/admin/problem-reports/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ status, admin_note: adminNote }) }),
 }
 
 export type { Identity }

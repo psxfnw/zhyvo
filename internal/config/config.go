@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type Config struct {
 	S3                   S3Config
 	Auth                 AuthConfig
 	Telegram             TelegramConfig
+	AdminTelegramIDs     []int64
 }
 
 type TelegramConfig struct {
@@ -129,6 +131,10 @@ func Load() (Config, error) {
 			InitDataTTL:       telegramInitDataTTL,
 		},
 	}
+	cfg.AdminTelegramIDs, err = int64List("ADMIN_TELEGRAM_IDS")
+	if err != nil {
+		return Config{}, err
+	}
 
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
@@ -162,6 +168,27 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func int64List(key string) ([]int64, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil, nil
+	}
+	seen := make(map[int64]struct{})
+	result := make([]int64, 0)
+	for _, item := range strings.Split(raw, ",") {
+		parsed, err := strconv.ParseInt(strings.TrimSpace(item), 10, 64)
+		if err != nil || parsed <= 0 {
+			return nil, fmt.Errorf("%s must contain positive Telegram user IDs separated by commas", key)
+		}
+		if _, exists := seen[parsed]; exists {
+			continue
+		}
+		seen[parsed] = struct{}{}
+		result = append(result, parsed)
+	}
+	return result, nil
 }
 
 func value(key, fallback string) string {

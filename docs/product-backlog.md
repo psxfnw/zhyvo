@@ -2,9 +2,11 @@
 
 ## Report a problem
 
-Status: designed, not yet implemented.
+Status: implemented in preview.
 
-A persistent but quiet `Повідомити про помилку` entry will open an in-app form with a required description and optional contact. With explicit consent, Zhyvo will attach only technical context needed for diagnosis: current route, app build, platform/browser, Telegram Mini App flag, latest request ID, and timestamp. It will never attach room media, PIN/password values, Telegram init data, access tokens, or filenames by default. Submissions should enter a small server-side issue inbox with rate limiting and a reference number shown to the user; production can later forward the same sanitized payload to Sentry, Linear, or email without changing the client flow.
+A persistent but quiet `Повідомити про проблему` entry opens an in-app form with a required description and optional contact. With explicit consent, Zhyvo attaches only technical context needed for diagnosis: sanitized route, app build, platform/browser, Telegram Mini App flag, network state, latest API error code, request ID, and timestamp. It never attaches room media, PIN/password values, Telegram init data, access tokens, invitation tokens, room codes, or filenames. Submissions enter a rate-limited server-side inbox and receive a reference such as `ZHY-AB12CD34`.
+
+The internal `/admin/reports` panel is protected by a server-side Telegram ID allowlist. It combines the report queue, statuses, internal notes, and real PostgreSQL metrics for active rooms, ready media, stored originals, users, and today's activity. New reports are placed in a durable Telegram outbox; the bot sends each configured administrator a private notification with a button that opens the exact report inside the Mini App.
 
 ## Managed room invitations
 

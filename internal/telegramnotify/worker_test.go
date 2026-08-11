@@ -74,6 +74,30 @@ func TestSendExpiryReminder(t *testing.T) {
 	}
 }
 
+func TestSendProblemReport(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = response.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	worker := New(nil, "test-token", "zhyvoappbot", time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	worker.apiBase = server.URL
+	worker.client = server.Client()
+	if err := worker.sendProblemReport(context.Background(), 123, payload{ReportID: "6b86b273-ff34-4f85-9d2f-1dd433155be3", PublicID: "ZHY-ABC234", Category: "upload", Description: "Відео не завантажується"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(received["text"].(string), "ZHY-ABC234") || !strings.Contains(received["text"].(string), "Завантаження") {
+		t.Fatalf("unexpected text: %v", received["text"])
+	}
+	if !strings.Contains(string(mustJSON(t, received["reply_markup"])), "startapp=admin_report_6b86b273-ff34-4f85-9d2f-1dd433155be3") {
+		t.Fatalf("admin deep link missing: %v", received["reply_markup"])
+	}
+}
+
 func mustJSON(t *testing.T, value any) []byte {
 	t.Helper()
 	encoded, err := json.Marshal(value)

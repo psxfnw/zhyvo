@@ -35,6 +35,10 @@ type payload struct {
 	Count          int       `json:"count"`
 	HoursRemaining int       `json:"hours_remaining"`
 	ExpiresAt      time.Time `json:"expires_at"`
+	ReportID       string    `json:"report_id"`
+	PublicID       string    `json:"public_id"`
+	Category       string    `json:"category"`
+	Description    string    `json:"description"`
 }
 
 func New(db *pgxpool.Pool, botToken, botUsername string, interval time.Duration, logger *slog.Logger) *Worker {
@@ -50,9 +54,15 @@ func (worker *Worker) Run(ctx context.Context) error {
 	ticker := time.NewTicker(worker.interval)
 	defer ticker.Stop()
 	for {
-		processed, err := worker.processOne(ctx)
+		processed, err := worker.processAdminOne(ctx)
 		if err != nil {
-			worker.logger.Error("process Telegram notification", "error", err)
+			worker.logger.Error("process Telegram admin notification", "error", err)
+		}
+		if !processed {
+			processed, err = worker.processOne(ctx)
+			if err != nil {
+				worker.logger.Error("process Telegram notification", "error", err)
+			}
 		}
 		if processed {
 			continue
@@ -63,6 +73,59 @@ func (worker *Worker) Run(ctx context.Context) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func (worker *Worker) processAdminOne(ctx context.Context) (bool, error) {
+	tx, err := worker.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var id uuid.UUID
+	var telegramUserID int64
+	var eventType string
+	var rawPayload []byte
+	var attempts int
+	err = tx.QueryRow(ctx, `
+		SELECT id, telegram_user_id, event_type, payload, attempts
+		FROM admin_notification_outbox
+		WHERE sent_at IS NULL AND failed_at IS NULL AND available_at <= now()
+		ORDER BY available_at, created_at
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED
+	`).Scan(&id, &telegramUserID, &eventType, &rawPayload, &attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, tx.Commit(ctx)
+	}
+	if err != nil {
+		return false, err
+	}
+	var data payload
+	if err := json.Unmarshal(rawPayload, &data); err != nil {
+		_, _ = tx.Exec(ctx, `UPDATE admin_notification_outbox SET failed_at = now(), last_error = 'invalid payload' WHERE id = $1`, id)
+		return true, tx.Commit(ctx)
+	}
+	if eventType != "problem_report_created" {
+		_, _ = tx.Exec(ctx, `UPDATE admin_notification_outbox SET failed_at = now(), last_error = 'unsupported event type' WHERE id = $1`, id)
+		return true, tx.Commit(ctx)
+	}
+	if err := worker.sendProblemReport(ctx, telegramUserID, data); err != nil {
+		attempts++
+		if attempts >= 8 || isPermanent(err) {
+			_, err = tx.Exec(ctx, `UPDATE admin_notification_outbox SET attempts = $2, failed_at = now(), last_error = $3 WHERE id = $1`, id, attempts, err.Error())
+		} else {
+			delay := time.Duration(1<<min(attempts, 8)) * time.Second
+			_, err = tx.Exec(ctx, `UPDATE admin_notification_outbox SET attempts = $2, available_at = now() + $3::interval, last_error = $4 WHERE id = $1`, id, attempts, delay.String(), err.Error())
+		}
+		if err != nil {
+			return true, err
+		}
+		return true, tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE admin_notification_outbox SET sent_at = now(), last_error = NULL WHERE id = $1`, id); err != nil {
+		return true, err
+	}
+	return true, tx.Commit(ctx)
 }
 
 func (worker *Worker) processOne(ctx context.Context) (bool, error) {
@@ -157,6 +220,26 @@ func (worker *Worker) send(ctx context.Context, chatID int64, eventType string, 
 			"url":  "https://t.me/" + worker.botUsername + "?startapp=room_" + data.RoomSlug,
 		}}}},
 	}
+	return worker.sendMessage(ctx, requestBody)
+}
+
+func (worker *Worker) sendProblemReport(ctx context.Context, chatID int64, data payload) error {
+	category := map[string]string{"upload": "Завантаження", "download": "Збереження", "room": "Кімната або запрошення", "telegram": "Telegram", "other": "Інше"}[data.Category]
+	if category == "" {
+		category = "Інше"
+	}
+	text := fmt.Sprintf("Нове звернення %s\nКатегорія: %s\n\n%s", data.PublicID, category, data.Description)
+	return worker.sendMessage(ctx, map[string]any{
+		"chat_id": chatID,
+		"text":    text,
+		"reply_markup": map[string]any{"inline_keyboard": [][]map[string]string{{{
+			"text": "Відкрити звернення",
+			"url":  "https://t.me/" + worker.botUsername + "?startapp=admin_report_" + data.ReportID,
+		}}}},
+	})
+}
+
+func (worker *Worker) sendMessage(ctx context.Context, requestBody map[string]any) error {
 	encoded, err := json.Marshal(requestBody)
 	if err != nil {
 		return err

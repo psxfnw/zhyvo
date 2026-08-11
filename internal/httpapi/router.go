@@ -12,26 +12,28 @@ import (
 	"photodrop/internal/auth"
 	"photodrop/internal/media"
 	"photodrop/internal/objectstore"
+	"photodrop/internal/problemreport"
 	"photodrop/internal/realtime"
 	"photodrop/internal/room"
 	"photodrop/internal/roomarchive"
 )
 
 type Dependencies struct {
-	DB                  *pgxpool.Pool
-	Store               *objectstore.Store
-	AuthService         *auth.Service
-	Tokens              *auth.TokenManager
-	RoomService         *room.Service
-	MediaService        *media.Service
-	ArchiveService      *roomarchive.Service
-	RealtimeService     *realtime.Service
-	RealtimeBroker      *realtime.Broker
-	TelegramBotToken    string
-	TelegramBotUsername string
-	TelegramInitDataTTL time.Duration
-	TelegramOIDC        *auth.TelegramOIDC
-	Logger              *slog.Logger
+	DB                   *pgxpool.Pool
+	Store                *objectstore.Store
+	AuthService          *auth.Service
+	Tokens               *auth.TokenManager
+	RoomService          *room.Service
+	MediaService         *media.Service
+	ArchiveService       *roomarchive.Service
+	ProblemReportService *problemreport.Service
+	RealtimeService      *realtime.Service
+	RealtimeBroker       *realtime.Broker
+	TelegramBotToken     string
+	TelegramBotUsername  string
+	TelegramInitDataTTL  time.Duration
+	TelegramOIDC         *auth.TelegramOIDC
+	Logger               *slog.Logger
 }
 
 func NewRouter(dependencies Dependencies) http.Handler {
@@ -43,6 +45,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 	refreshLimiter := newRateLimiter(30, 10)
 	joinLimiter := newRateLimiter(6, 3)
 	uploadLimiter := newRateLimiter(60, 10)
+	reportLimiter := newRateLimiter(3, 2)
 
 	router.Get("/health/live", func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, map[string]string{"status": "ok"})
@@ -86,6 +89,8 @@ func NewRouter(dependencies Dependencies) http.Handler {
 	uploadAPI := uploadHandler{service: dependencies.MediaService}
 	archiveAPI := archiveHandler{service: dependencies.ArchiveService}
 	realtimeAPI := realtimeHandler{service: dependencies.RealtimeService, broker: dependencies.RealtimeBroker, auth: dependencies.AuthService}
+	problemReportAPI := problemReportHandler{service: dependencies.ProblemReportService}
+	router.With(optionalAuth(dependencies.Tokens, dependencies.AuthService), reportLimiter.middleware(identityKey)).Post("/api/v1/problem-reports", problemReportAPI.create)
 	router.Get("/api/v1/rooms/{slug}/preview", roomAPI.preview)
 	router.Get("/api/v1/invites/{token}/preview", roomAPI.invitePreview)
 	router.Get("/invite/{slug}", inviteHandler{rooms: dependencies.RoomService, botUsername: dependencies.TelegramBotUsername}.show)
@@ -127,6 +132,15 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		router.Post("/api/v1/rooms/{slug}/archive", archiveAPI.request)
 		router.Get("/api/v1/archives/{archiveID}", archiveAPI.get)
 		router.Post("/api/v1/archives/{archiveID}/download-url", archiveAPI.download)
+	})
+
+	router.Group(func(router chi.Router) {
+		router.Use(requireAuth(dependencies.Tokens, dependencies.AuthService))
+		router.Use(requireAdmin(dependencies.ProblemReportService))
+		router.Get("/api/v1/admin/stats", problemReportAPI.stats)
+		router.Get("/api/v1/admin/problem-reports", problemReportAPI.list)
+		router.Get("/api/v1/admin/problem-reports/{reportID}", problemReportAPI.get)
+		router.Patch("/api/v1/admin/problem-reports/{reportID}", problemReportAPI.update)
 	})
 
 	router.NotFound(func(response http.ResponseWriter, request *http.Request) {

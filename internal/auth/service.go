@@ -30,9 +30,10 @@ type Service struct {
 }
 
 type Identity struct {
-	ID          uuid.UUID `json:"id"`
-	Kind        string    `json:"kind"`
-	DisplayName string    `json:"display_name"`
+	ID             uuid.UUID `json:"id"`
+	Kind           string    `json:"kind"`
+	DisplayName    string    `json:"display_name"`
+	TelegramUserID *int64    `json:"telegram_user_id,omitempty"`
 }
 
 type SessionTokens struct {
@@ -110,7 +111,7 @@ func (s *Service) CreateTelegram(ctx context.Context, user TelegramUser) (Sessio
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	identity := Identity{Kind: "telegram", DisplayName: user.DisplayName()}
+	identity := Identity{Kind: "telegram", DisplayName: user.DisplayName(), TelegramUserID: &user.ID}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO identities (kind, display_name, telegram_user_id, created_at, last_seen_at)
 		VALUES ('telegram', $1, $2, $3, $3)
@@ -161,7 +162,7 @@ func (s *Service) LinkTelegram(ctx context.Context, sourceID uuid.UUID, user Tel
 		return SessionTokens{}, ErrIdentityLinkDenied
 	}
 
-	identity := Identity{Kind: "telegram", DisplayName: user.DisplayName()}
+	identity := Identity{Kind: "telegram", DisplayName: user.DisplayName(), TelegramUserID: &user.ID}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO identities (kind, display_name, telegram_user_id, created_at, last_seen_at)
 		VALUES ('telegram', $1, $2, $3, $3)
@@ -290,12 +291,12 @@ func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (SessionT
 	var refreshExpiry time.Time
 	identity := Identity{}
 	err = tx.QueryRow(ctx, `
-		SELECT s.id, s.expires_at, i.id, i.kind, i.display_name
+		SELECT s.id, s.expires_at, i.id, i.kind, i.display_name, i.telegram_user_id
 		FROM sessions s
 		JOIN identities i ON i.id = s.identity_id
 		WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
 		FOR UPDATE OF s
-	`, oldHash[:]).Scan(&sessionID, &refreshExpiry, &identity.ID, &identity.Kind, &identity.DisplayName)
+	`, oldHash[:]).Scan(&sessionID, &refreshExpiry, &identity.ID, &identity.Kind, &identity.DisplayName, &identity.TelegramUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SessionTokens{}, ErrInvalidRefreshToken
 	}
@@ -324,10 +325,10 @@ func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (SessionT
 func (s *Service) GetIdentity(ctx context.Context, identityID uuid.UUID) (Identity, error) {
 	var identity Identity
 	err := s.db.QueryRow(ctx, `
-		SELECT id, kind, display_name
+		SELECT id, kind, display_name, telegram_user_id
 		FROM identities
 		WHERE id = $1
-	`, identityID).Scan(&identity.ID, &identity.Kind, &identity.DisplayName)
+	`, identityID).Scan(&identity.ID, &identity.Kind, &identity.DisplayName, &identity.TelegramUserID)
 	return identity, err
 }
 

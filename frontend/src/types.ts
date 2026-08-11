@@ -4,6 +4,7 @@ export interface Identity {
   id: string
   kind: 'anonymous' | 'telegram' | 'account'
   display_name: string
+  telegram_user_id?: number
 }
 
 export interface Session {
@@ -174,4 +175,45 @@ export interface RoomRecap {
   total_bytes: number
   created_at: string
   expires_at: string
+}
+
+export type ProblemReportCategory = 'upload' | 'download' | 'room' | 'telegram' | 'other'
+export type ProblemReportStatus = 'new' | 'in_progress' | 'resolved' | 'closed'
+
+export interface ProblemReportContext {
+  route?: string
+  app_build?: string
+  platform?: string
+  browser?: string
+  telegram?: boolean
+  online?: boolean
+  error_code?: string
+  request_id?: string
+  occurred_at?: string
+}
+
+export interface ProblemReport {
+  id: string
+  public_id: string
+  category: ProblemReportCategory
+  description: string
+  contact?: string
+  technical_context: ProblemReportContext
+  status: ProblemReportStatus
+  admin_note?: string
+  reporter_name?: string
+  created_at: string
+  updated_at: string
+  resolved_at?: string
+}
+
+export interface AdminStats {
+  active_rooms: number
+  ready_media: number
+  stored_bytes: number
+  total_users: number
+  new_reports: number
+  reports_today: number
+  uploads_today: number
+  new_users_today: number
 }

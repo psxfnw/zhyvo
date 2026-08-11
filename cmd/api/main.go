@@ -15,6 +15,7 @@ import (
 	"photodrop/internal/httpapi"
 	"photodrop/internal/media"
 	"photodrop/internal/objectstore"
+	"photodrop/internal/problemreport"
 	"photodrop/internal/realtime"
 	"photodrop/internal/room"
 	"photodrop/internal/roomarchive"
@@ -54,26 +55,28 @@ func run(logger *slog.Logger) error {
 	mediaService := media.NewService(db, store)
 	archiveService := roomarchive.NewService(db, store)
 	realtimeService := realtime.NewService(db)
+	problemReportService := problemreport.New(db, cfg.AdminTelegramIDs)
 	realtimeBroker := realtime.NewBroker(db, logger)
 	go realtimeBroker.Run(ctx)
 
 	server := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: httpapi.NewRouter(httpapi.Dependencies{
-			DB:                  db,
-			Store:               store,
-			AuthService:         authService,
-			Tokens:              tokens,
-			RoomService:         roomService,
-			MediaService:        mediaService,
-			ArchiveService:      archiveService,
-			RealtimeService:     realtimeService,
-			RealtimeBroker:      realtimeBroker,
-			TelegramBotToken:    cfg.Telegram.BotToken,
-			TelegramBotUsername: cfg.Telegram.BotUsername,
-			TelegramInitDataTTL: cfg.Telegram.InitDataTTL,
-			TelegramOIDC:        telegramOIDC,
-			Logger:              logger,
+			DB:                   db,
+			Store:                store,
+			AuthService:          authService,
+			Tokens:               tokens,
+			RoomService:          roomService,
+			MediaService:         mediaService,
+			ArchiveService:       archiveService,
+			ProblemReportService: problemReportService,
+			RealtimeService:      realtimeService,
+			RealtimeBroker:       realtimeBroker,
+			TelegramBotToken:     cfg.Telegram.BotToken,
+			TelegramBotUsername:  cfg.Telegram.BotUsername,
+			TelegramInitDataTTL:  cfg.Telegram.InitDataTTL,
+			TelegramOIDC:         telegramOIDC,
+			Logger:               logger,
 		}),
 		ReadHeaderTimeout: cfg.ShutdownTimeout,
 	}

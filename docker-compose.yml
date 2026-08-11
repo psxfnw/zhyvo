@@ -84,6 +84,7 @@ services:
       TELEGRAM_LOGIN_CLIENT_ID: ${TELEGRAM_LOGIN_CLIENT_ID:-}
       TELEGRAM_LOGIN_CLIENT_SECRET: ${TELEGRAM_LOGIN_CLIENT_SECRET:-}
       TELEGRAM_INIT_DATA_TTL: ${TELEGRAM_INIT_DATA_TTL:-10m}
+      ADMIN_TELEGRAM_IDS: ${ADMIN_TELEGRAM_IDS:-}
     depends_on:
       postgres:
         condition: service_healthy

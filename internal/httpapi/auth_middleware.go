@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"photodrop/internal/auth"
 )
 
@@ -36,6 +37,42 @@ func requireAuth(tokens *auth.TokenManager, service *auth.Service) func(http.Han
 
 			ctx := context.WithValue(request.Context(), principalContextKey{}, principal)
 			next.ServeHTTP(response, request.WithContext(ctx))
+		})
+	}
+}
+
+func optionalAuth(tokens *auth.TokenManager, service *auth.Service) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			if strings.TrimSpace(request.Header.Get("Authorization")) == "" {
+				next.ServeHTTP(response, request)
+				return
+			}
+			requireAuth(tokens, service)(next).ServeHTTP(response, request)
+		})
+	}
+}
+
+func requireAdmin(service interface {
+	IsAdmin(context.Context, uuid.UUID) (bool, error)
+}) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			principal, ok := principalFromContext(request.Context())
+			if !ok {
+				writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+				return
+			}
+			allowed, err := service.IsAdmin(request.Context(), principal.IdentityID)
+			if err != nil {
+				writeAPIError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error")
+				return
+			}
+			if !allowed {
+				writeAPIError(response, request, http.StatusForbidden, "ADMIN_REQUIRED", "Administrator access is required")
+				return
+			}
+			next.ServeHTTP(response, request)
 		})
 	}
 }

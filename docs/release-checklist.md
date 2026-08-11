@@ -45,6 +45,8 @@ This changes name resolution only inside the launched test browser and does not 
 - Close joining and uploads independently; confirm existing members still see the gallery.
 - Confirm the owner sees members and room activity, and can delete any media while a member can delete only their own.
 - Verify Telegram notifications only after the owner explicitly enables them.
+- For a room with less than six hours remaining, verify every member sees the exact deletion warning and can start the device-appropriate save flow.
+- Enable Telegram notifications and confirm the outbox contains one deadline-scoped reminder for six hours and one for one hour; disabling notifications removes unsent expiry reminders.
 
 ## Operational checks
 

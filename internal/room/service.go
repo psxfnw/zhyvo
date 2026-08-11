@@ -497,6 +497,9 @@ func (s *Service) UpdateNotifications(ctx context.Context, identityID uuid.UUID,
 	`, roomID, identityID, enabled); err != nil {
 		return NotificationSettings{}, fmt.Errorf("update notification settings: %w", err)
 	}
+	if err := scheduleExpiryNotifications(ctx, tx, roomID, identityID); err != nil {
+		return NotificationSettings{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return NotificationSettings{}, err
 	}
@@ -588,6 +591,11 @@ func (s *Service) Update(ctx context.Context, identityID uuid.UUID, slug string,
 	}
 	if err := recordEvent(ctx, tx, roomID, "room_updated", identityID, nil); err != nil {
 		return Room{}, err
+	}
+	if input.Name != nil || input.LifetimeDays != nil {
+		if err := scheduleExpiryNotifications(ctx, tx, roomID, identityID); err != nil {
+			return Room{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Room{}, err
@@ -705,6 +713,12 @@ func (s *Service) TransferOwnership(ctx context.Context, ownerID uuid.UUID, slug
 	}
 	if _, err := tx.Exec(ctx, `UPDATE rooms SET owner_identity_id = $2 WHERE id = $1`, roomID, memberID); err != nil {
 		return Room{}, fmt.Errorf("update room owner: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM telegram_notification_outbox WHERE room_id = $1 AND sent_at IS NULL`, roomID); err != nil {
+		return Room{}, fmt.Errorf("clear pending owner notifications: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM room_notification_preferences WHERE room_id = $1`, roomID); err != nil {
+		return Room{}, fmt.Errorf("reset owner notification preference: %w", err)
 	}
 	if err := recordEvent(ctx, tx, roomID, "ownership_transferred", ownerID, &memberID); err != nil {
 		return Room{}, err
@@ -832,6 +846,40 @@ func recordEvent(ctx context.Context, tx pgx.Tx, roomID uuid.UUID, eventType str
 	}
 	if result.RowsAffected() != 1 {
 		return errors.New("record room event actor not found")
+	}
+	return nil
+}
+
+func scheduleExpiryNotifications(ctx context.Context, tx pgx.Tx, roomID, ownerID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM telegram_notification_outbox
+		WHERE room_id = $1 AND event_type = 'room_expiry' AND sent_at IS NULL
+	`, roomID); err != nil {
+		return fmt.Errorf("clear expiry notifications: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO telegram_notification_outbox (
+			room_id, telegram_user_id, event_type, payload, dedupe_key, available_at
+		)
+		SELECT room.id, identity.telegram_user_id, 'room_expiry',
+		       jsonb_build_object(
+			       'room_name', room.name,
+			       'room_slug', room.slug,
+			       'hours_remaining', reminder.hours,
+			       'expires_at', room.expires_at
+		       ),
+		       format('room-expiry:%s:%s:%s', room.id, extract(epoch FROM room.expires_at)::bigint, reminder.hours),
+		       GREATEST(now(), room.expires_at - reminder.hours * interval '1 hour')
+		FROM rooms room
+		JOIN identities identity ON identity.id = $2 AND identity.telegram_user_id IS NOT NULL
+		JOIN room_notification_preferences preference
+		  ON preference.room_id = room.id AND preference.identity_id = identity.id AND preference.telegram_enabled
+		CROSS JOIN (VALUES (6), (1)) AS reminder(hours)
+		WHERE room.id = $1 AND room.status = 'active' AND room.expires_at > now()
+		  AND (reminder.hours = 1 OR room.expires_at > now() + interval '1 hour')
+		ON CONFLICT (dedupe_key) DO NOTHING
+	`, roomID, ownerID); err != nil {
+		return fmt.Errorf("schedule expiry notifications: %w", err)
 	}
 	return nil
 }

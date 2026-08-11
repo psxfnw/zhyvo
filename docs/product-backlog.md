@@ -1,5 +1,11 @@
 # Product backlog
 
+## Expiry warnings and Telegram reminders
+
+Status: implemented in preview.
+
+Every room member receives an in-room warning during the final six hours, with the exact deletion time and device-appropriate save action. Owners who opt into the existing Telegram notification setting receive durable reminders at six hours and one hour before deletion. Reminder rows use deadline-scoped deduplication, are rescheduled when the room name or lifetime changes, are removed when notifications are disabled, and never send after the room expires. Transferring ownership clears pending owner notifications and requires the new owner to opt in. A realtime-trigger fix also ensures cascaded membership deletion cannot block permanent TTL cleanup.
+
 ## New-room activation
 
 Status: implemented in preview.

@@ -199,6 +199,34 @@ try {
   const uploadedMediaID = ownerGallery.items[0]?.id
   if (!uploadedMediaID) throw new Error('Uploaded media is missing from gallery API')
   if (ownerGallery.items[0].thumbnail_status !== 'ready' || !ownerGallery.items[0].thumbnail_url) throw new Error(`Thumbnail did not become ready: ${ownerGallery.items[0].thumbnail_status}`)
+
+  const expiryContext = await browser.newContext({ viewport: { width: 375, height: 812 }, locale: 'uk-UA' })
+  try {
+    await expiryContext.addInitScript((storedSession) => {
+      localStorage.setItem('photodrop.session.v1', JSON.stringify(storedSession))
+    }, auth)
+    const expiryPage = await expiryContext.newPage()
+    await expiryPage.route(`**/api/v1/rooms/${slug}`, async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      const response = await route.fetch()
+      const body = await response.json()
+      body.room.expires_at = new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString()
+      await route.fulfill({ response, json: body })
+    })
+    await expiryPage.goto(`${baseURL}/r/${slug}`, { waitUntil: 'domcontentloaded' })
+    const expiryWarning = expiryPage.getByRole('region', { name: /годин, щоб зберегти файли/ })
+    await expiryWarning.waitFor()
+    await expiryWarning.getByRole('button', { name: 'Зберегти файли' }).waitFor()
+    await expiryWarning.getByRole('button', { name: 'Продовжити строк' }).waitFor()
+    const expiryTargets = await expiryWarning.locator('button:visible').evaluateAll((elements) => elements
+      .map((element) => ({ label: element.textContent?.trim(), ...element.getBoundingClientRect().toJSON() }))
+      .filter((box) => box.width < 44 || box.height < 44))
+    if (expiryTargets.length) throw new Error(`Expiry warning touch targets below 44px: ${JSON.stringify(expiryTargets)}`)
+    await expiryPage.screenshot({ path: resolve(artifacts, 'expiry-warning-375.png'), fullPage: true })
+  } finally {
+    await expiryContext.close()
+  }
+
   await page.getByRole('button', { name: 'Додати в обране pwa-64x64.png' }).click()
   await page.getByRole('button', { name: 'Прибрати з обраного pwa-64x64.png' }).getByText('1').waitFor()
   const guestFavorite = await json(`/media/${uploadedMediaID}/favorite`, {
@@ -410,7 +438,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, roomActivation: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, roomActivation: true, expiryWarning: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

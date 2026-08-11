@@ -28,11 +28,13 @@ type Worker struct {
 }
 
 type payload struct {
-	RoomName string `json:"room_name"`
-	RoomSlug string `json:"room_slug"`
-	Actor    string `json:"actor_name"`
-	Filename string `json:"filename"`
-	Count    int    `json:"count"`
+	RoomName       string    `json:"room_name"`
+	RoomSlug       string    `json:"room_slug"`
+	Actor          string    `json:"actor_name"`
+	Filename       string    `json:"filename"`
+	Count          int       `json:"count"`
+	HoursRemaining int       `json:"hours_remaining"`
+	ExpiresAt      time.Time `json:"expires_at"`
 }
 
 func New(db *pgxpool.Pool, botToken, botUsername string, interval time.Duration, logger *slog.Logger) *Worker {
@@ -75,12 +77,20 @@ func (worker *Worker) processOne(ctx context.Context) (bool, error) {
 	var rawPayload []byte
 	var attempts int
 	err = tx.QueryRow(ctx, `
-		SELECT id, telegram_user_id, event_type, payload, attempts
-		FROM telegram_notification_outbox
-		WHERE sent_at IS NULL AND failed_at IS NULL AND available_at <= now()
-		ORDER BY available_at, created_at
+		SELECT notification.id, notification.telegram_user_id, notification.event_type, notification.payload, notification.attempts
+		FROM telegram_notification_outbox notification
+		JOIN rooms room ON room.id = notification.room_id
+		WHERE notification.sent_at IS NULL AND notification.failed_at IS NULL
+		  AND notification.available_at <= now()
+		  AND room.status = 'active' AND room.expires_at > now()
+		  AND (
+			notification.event_type <> 'room_expiry'
+			OR COALESCE((notification.payload->>'hours_remaining')::int, 1) <= 1
+			OR room.expires_at > now() + interval '1 hour'
+		  )
+		ORDER BY notification.available_at, notification.created_at
 		LIMIT 1
-		FOR UPDATE SKIP LOCKED
+		FOR UPDATE OF notification SKIP LOCKED
 	`).Scan(&id, &telegramUserID, &eventType, &rawPayload, &attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, tx.Commit(ctx)
@@ -129,6 +139,12 @@ func (worker *Worker) send(ctx context.Context, chatID int64, eventType string, 
 			text = fmt.Sprintf("%s додав(ла) %d нових файлів у «%s».", data.Actor, data.Count, data.RoomName)
 		} else {
 			text = fmt.Sprintf("%s додав(ла) файл «%s» у «%s».", data.Actor, data.Filename, data.RoomName)
+		}
+	case "room_expiry":
+		if data.HoursRemaining <= 1 {
+			text = fmt.Sprintf("Кімната «%s» буде видалена менш ніж за годину. Після цього файли відновити неможливо.", data.RoomName)
+		} else {
+			text = fmt.Sprintf("До видалення кімнати «%s» залишилося менше 6 годин. Збережіть потрібні оригінали.", data.RoomName)
 		}
 	default:
 		return permanentError{fmt.Errorf("unsupported event type %q", eventType)}

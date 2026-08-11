@@ -1098,6 +1098,7 @@ function RoomPage() {
   const [newMediaCount, setNewMediaCount] = useState(0)
   const [activationVisible, setActivationVisible] = useState(Boolean((location.state as { justCreated?: boolean } | null)?.justCreated))
   const [activationShared, setActivationShared] = useState(false)
+  const [clockNow, setClockNow] = useState(Date.now())
   const selectedMediaID = searchParams.get('media')
   const roomLoaded = room !== null
 
@@ -1115,6 +1116,12 @@ function RoomPage() {
   useEffect(() => {
     if (gallery.length > 0) setActivationVisible(false)
   }, [gallery.length])
+
+  useEffect(() => {
+    if (!room) return
+    const timer = window.setInterval(() => setClockNow(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [room])
 
   useEffect(() => {
     if (!room || !session) return
@@ -1738,6 +1745,10 @@ function RoomPage() {
   if (!room) return null
 
   const ttl = remaining(room.expires_at)
+  const expiryRemainingMs = new Date(room.expires_at).getTime() - clockNow
+  const expiryWarning = expiryRemainingMs > 0 && expiryRemainingMs <= 6 * 60 * 60 * 1000
+  const expiryWarningHours = Math.max(1, Math.ceil(expiryRemainingMs / (60 * 60 * 1000)))
+  const roomLifetimeDays = Math.max(1, Math.min(3, Math.round((new Date(room.expires_at).getTime() - new Date(room.created_at).getTime()) / (24 * 60 * 60 * 1000))))
   const usedPercent = Math.min(100, (room.used_storage_bytes / room.max_storage_bytes) * 100)
   const filteredGallery = gallery.filter((item) => {
     if (galleryFilter === 'mine') return item.uploaded_by.id === session?.identity.id
@@ -1793,6 +1804,21 @@ function RoomPage() {
       </section>
 
       {error && <div className="page-error" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="Закрити"><X size={17} /></button></div>}
+
+      {expiryWarning && (
+        <section className="expiry-warning" aria-labelledby="expiry-warning-title">
+          <div className="expiry-warning__marker" aria-hidden="true"><strong>{String(expiryWarningHours).padStart(2, '0')}</strong><span>{expiryWarningHours === 1 ? 'година' : 'годин'}</span></div>
+          <div className="expiry-warning__copy">
+            <p className="eyebrow">Автовидалення наближається</p>
+            <h2 id="expiry-warning-title">{expiryWarningHours === 1 ? 'Менше години, щоб зберегти файли' : `Менше ${expiryWarningHours} годин, щоб зберегти файли`}</h2>
+            <p>Кімната й усі оригінали будуть видалені назавжди {new Date(room.expires_at).toLocaleString('uk-UA', { dateStyle: 'long', timeStyle: 'short' })}.</p>
+          </div>
+          {(gallery.length > 0 || (room.role === 'owner' && roomLifetimeDays < 3)) && <div className="expiry-warning__actions">
+            {gallery.length > 0 && <button className="primary-button" onClick={() => isMobileDevice() ? setMobileSaveOpen(true) : void handleArchive()}><ArrowDownToLine size={18} /> Зберегти файли</button>}
+            {room.role === 'owner' && roomLifetimeDays < 3 && <button className="secondary-button" onClick={() => setSettings(true)}><Clock3 size={18} /> Продовжити строк</button>}
+          </div>}
+        </section>
+      )}
 
       {newMediaCount > 0 && (
         <aside className="new-media-shelf" aria-live="polite">
@@ -1982,7 +2008,7 @@ function RoomPage() {
               <button className="primary-button" onClick={() => void saveRoomSettings()} disabled={settingsBusy}>{settingsBusy ? 'Зберігаємо…' : 'Зберегти зміни'}</button>
             </div>
             <div className="setting-row"><div><strong>Учасники кімнати</strong><span>Перегляньте всіх, хто приєднався за посиланням або QR-кодом.</span></div><button className="secondary-button primary-button--fit" onClick={() => void openMembers()}><Users size={17} /> Переглянути</button></div>
-            <div className="setting-row"><div><strong>Сповіщення в Telegram</strong><span>{notificationSettings?.telegram_available ? 'Нові учасники та завантаження. Файли об’єднуємо в короткі повідомлення без спаму.' : 'Підключіть Telegram, щоб бот міг повідомляти про активність у кімнаті.'}</span></div>{notificationSettings?.telegram_available ? <button className={`switch ${notificationSettings.telegram_enabled ? 'on' : ''}`} role="switch" aria-checked={notificationSettings.telegram_enabled} disabled={notificationBusy} onClick={() => void toggleNotifications()}><span /></button> : <button className="secondary-button primary-button--fit" onClick={() => navigate(`/auth/telegram/link?returnTo=${encodeURIComponent(`/r/${slug}`)}`)}><Send size={17} /> Підключити</button>}</div>
+            <div className="setting-row"><div><strong>Сповіщення в Telegram</strong><span>{notificationSettings?.telegram_available ? 'Нові учасники, завантаження та нагадування за 6 годин і за 1 годину до видалення.' : 'Підключіть Telegram, щоб бот міг повідомляти про активність і наближення автовидалення.'}</span></div>{notificationSettings?.telegram_available ? <button className={`switch ${notificationSettings.telegram_enabled ? 'on' : ''}`} role="switch" aria-checked={notificationSettings.telegram_enabled} disabled={notificationBusy} onClick={() => void toggleNotifications()}><span /></button> : <button className="secondary-button primary-button--fit" onClick={() => navigate(`/auth/telegram/link?returnTo=${encodeURIComponent(`/r/${slug}`)}`)}><Send size={17} /> Підключити</button>}</div>
             <div className="setting-row"><div><strong>Приймати нових учасників</strong><span>Вимкніть, щоб нові люди не могли приєднатися за старим посиланням.</span></div><button className={`switch ${room.accepting_members ? 'on' : ''}`} role="switch" aria-checked={room.accepting_members} onClick={() => void toggleMembers()}><span /></button></div>
             <div className="setting-row"><div><strong>Приймати нові файли</strong><span>Учасники бачитимуть галерею, але не зможуть завантажувати медіа.</span></div><button className={`switch ${room.accepting_uploads ? 'on' : ''}`} role="switch" aria-checked={room.accepting_uploads} onClick={() => void toggleUploads()}><span /></button></div>
             <div className="setting-row setting-row--danger"><div><strong>Видалити кімнату</strong><span>Усі оригінали та дані буде видалено без можливості відновлення.</span></div><button className="danger-button" onClick={deleteRoom}><Trash2 size={17} /> Видалити</button></div>

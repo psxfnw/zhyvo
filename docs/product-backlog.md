@@ -38,3 +38,9 @@ This flow avoids creating a persistent `Telegram Widgets` browser session, makes
 Status: implemented in preview.
 
 Room owners with a linked Telegram identity can opt in per room. Member joins are delivered immediately; file uploads are grouped into a short per-uploader digest. Delivery uses a PostgreSQL transactional outbox processed by the existing worker with bounded retries, so notification failures never roll back joins or media uploads.
+
+## Mobile media compatibility
+
+Status: implemented in preview.
+
+The thumbnail worker uses FFmpeg/FFprobe with explicit autorotation, bounded processing time, display-aware dimensions and video duration metadata. Video posters are sampled near 10% of the clip to avoid black opening frames. HEIC/HEIF files use a libheif fallback and remain downloadable in original quality while browsers receive a compatible JPEG preview. Command errors are sanitized before persistence so presigned storage URLs never enter diagnostic fields.

@@ -76,7 +76,7 @@ export interface GalleryItem {
   captured_at?: string | null
   created_at: string
   thumbnail_url: string | null
-  thumbnail_status: 'pending' | 'ready'
+  thumbnail_status: 'pending' | 'processing' | 'ready' | 'failed'
   uploaded_by: { id: string; display_name: string }
   permissions: { can_delete: boolean }
 }

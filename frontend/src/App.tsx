@@ -74,6 +74,18 @@ function galleryDay(item: GalleryItem) {
   }
 }
 
+function mediaDuration(durationMS?: number) {
+  if (!durationMS || durationMS < 0) return ''
+  const totalSeconds = Math.round(durationMS / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
+
+function isHEIFItem(item: GalleryItem) {
+  return item.mime_type === 'image/heic' || item.mime_type === 'image/heif'
+}
+
 function activityLabel(event: RoomActivityEvent) {
   switch (event.type) {
     case 'room_created': return `${event.actor_display_name} створив(ла) кімнату`
@@ -570,9 +582,10 @@ function GalleryCard({ item, selectionMode, selected, onToggle, onDelete, onOpen
     <article className={`media-card ${selected ? 'media-card--selected' : ''}`}>
       <button className="media-preview" type="button" onClick={() => selectionMode ? onToggle(item) : onOpen(item)} aria-label={selectionMode ? `${selected ? 'Зняти вибір із' : 'Вибрати'} ${item.original_filename}` : `Відкрити ${item.original_filename}`}>
         {item.thumbnail_url ? <img src={item.thumbnail_url} alt={item.original_filename} loading="lazy" /> : (
-          <div className="media-placeholder">{item.media_type === 'video' ? <Video /> : <FileImage />}<span>Готуємо прев’ю</span></div>
+          <div className="media-placeholder">{item.media_type === 'video' ? <Video /> : <FileImage />}<span>{item.thumbnail_status === 'failed' ? 'Прев’ю недоступне' : 'Готуємо прев’ю'}</span></div>
         )}
-        {item.media_type === 'video' && <span className="video-badge"><Video size={14} /> Відео</span>}
+        {item.media_type === 'video' && <span className="video-badge"><Video size={14} /> {mediaDuration(item.duration_ms) || 'Відео'}</span>}
+        {isHEIFItem(item) && <span className="format-badge">HEIC</span>}
         {selectionMode && <span className={`media-select ${selected ? 'is-selected' : ''}`} aria-hidden="true">{selected && <Check size={16} />}</span>}
       </button>
       <div className="media-meta">
@@ -780,6 +793,7 @@ function MediaViewer({ item, items, onSelect, onClose, onError }: {
   const index = items.findIndex((candidate) => candidate.id === item.id)
   const previous = index > 0 ? items[index - 1] : null
   const next = index >= 0 && index < items.length - 1 ? items[index + 1] : null
+  const heifPreview = isHEIFItem(item)
 
   useEffect(() => {
     let active = true
@@ -816,7 +830,12 @@ function MediaViewer({ item, items, onSelect, onClose, onError }: {
         {loading && <div className="viewer-loading" role="status">Завантажуємо оригінал…</div>}
         {!loading && source && (item.media_type === 'video'
           ? <video key={source.url} src={source.url} controls playsInline autoPlay aria-label={item.original_filename} />
-          : <img src={source.url} alt={item.original_filename} />)}
+          : heifPreview
+            ? item.thumbnail_url
+              ? <img src={item.thumbnail_url} alt={item.original_filename} />
+              : <div className="viewer-loading" role="status">Готуємо сумісне прев’ю HEIC…</div>
+            : <img src={source.url} alt={item.original_filename} />)}
+        {!loading && heifPreview && <div className="viewer-format-note">Показуємо оптимізоване прев’ю HEIC. Оригінал доступний кнопкою завантаження.</div>}
         {previous && <button className="viewer-nav viewer-nav--previous" onClick={() => onSelect(previous)} aria-label="Попередній файл"><ChevronLeft /></button>}
         {next && <button className="viewer-nav viewer-nav--next" onClick={() => onSelect(next)} aria-label="Наступний файл"><ChevronRight /></button>}
       </div>

@@ -26,6 +26,6 @@ CMD ["/app/bin/migrate"]
 
 FROM runtime-base AS worker
 USER root
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg libheif-tools
 USER app
 CMD ["/app/bin/worker"]

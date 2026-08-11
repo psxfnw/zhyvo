@@ -85,7 +85,7 @@ func (s *Service) Gallery(ctx context.Context, identityID uuid.UUID, slug string
 	rows, err := s.db.Query(ctx, `
 		SELECT m.id, m.media_type, m.mime_type, m.original_filename, m.size_bytes,
 		       m.width, m.height, m.duration_ms, m.captured_at, m.created_at,
-		       m.thumbnail_key, i.id, i.display_name, m.uploader_identity_id
+		       m.thumbnail_key, m.thumbnail_status, i.id, i.display_name, m.uploader_identity_id
 		FROM media m
 		JOIN identities i ON i.id = m.uploader_identity_id
 		WHERE m.room_id = $1
@@ -106,19 +106,17 @@ func (s *Service) Gallery(ctx context.Context, identityID uuid.UUID, slug string
 		if err := rows.Scan(
 			&item.ID, &item.MediaType, &item.MIMEType, &item.OriginalFilename, &item.SizeBytes,
 			&item.Width, &item.Height, &item.DurationMS, &item.CapturedAt, &item.CreatedAt,
-			&item.thumbnailKey, &item.UploadedBy.ID, &item.UploadedBy.DisplayName, &uploaderID,
+			&item.thumbnailKey, &item.ThumbnailStatus, &item.UploadedBy.ID, &item.UploadedBy.DisplayName, &uploaderID,
 		); err != nil {
 			return GalleryPage{}, fmt.Errorf("scan gallery item: %w", err)
 		}
 		item.Permissions.CanDelete = role == "owner" || uploaderID == identityID
-		item.ThumbnailStatus = "pending"
 		if item.thumbnailKey != nil {
 			url, _, err := s.store.PresignGet(ctx, *item.thumbnailKey, "")
 			if err != nil {
 				return GalleryPage{}, err
 			}
 			item.ThumbnailURL = &url
-			item.ThumbnailStatus = "ready"
 		}
 		items = append(items, item)
 	}

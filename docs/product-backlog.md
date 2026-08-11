@@ -1,5 +1,11 @@
 # Product backlog
 
+## First-run onboarding
+
+Status: implemented in preview.
+
+New visitors see a compact three-step walkthrough that explains room creation, link/QR invitations, original-quality uploads, and permanent expiry before they commit to an action. Completion is stored locally, existing users with active rooms are not interrupted, and `Як це працює` in the home header reopens the walkthrough at any time. Direct room invitations remain direct and never place onboarding in front of joining.
+
 ## Media captions and details
 
 Status: implemented in preview.

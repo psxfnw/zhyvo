@@ -75,6 +75,32 @@ page.on('pageerror', (error) => pageErrors.push(error.message))
 page.on('requestfailed', (request) => requestFailures.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText}`))
 
 try {
+  const onboardingContext = await browser.newContext({ viewport: { width: 375, height: 812 }, locale: 'uk-UA' })
+  try {
+    const onboardingPage = await onboardingContext.newPage()
+    await onboardingPage.goto(baseURL, { waitUntil: 'domcontentloaded' })
+    const onboardingDialog = onboardingPage.getByRole('dialog', { name: 'Створіть кімнату' })
+    await onboardingDialog.waitFor()
+    const onboardingTargets = await onboardingDialog.locator('button:visible, a:visible').evaluateAll((elements) => elements
+      .map((element) => ({ label: element.getAttribute('aria-label') || element.textContent?.trim(), ...element.getBoundingClientRect().toJSON() }))
+      .filter((box) => box.width < 44 || box.height < 44))
+    if (onboardingTargets.length) throw new Error(`Onboarding touch targets below 44px: ${JSON.stringify(onboardingTargets)}`)
+    await onboardingPage.screenshot({ path: resolve(artifacts, 'onboarding-375.png'), fullPage: true })
+    await onboardingDialog.getByRole('button', { name: 'Далі' }).click()
+    await onboardingPage.getByRole('dialog', { name: 'Запросіть друзів' }).waitFor()
+    await onboardingPage.getByRole('button', { name: 'Далі' }).click()
+    await onboardingPage.getByRole('dialog', { name: 'Збережіть потрібне' }).waitFor()
+    await onboardingPage.getByRole('button', { name: 'Почати' }).click()
+    await onboardingPage.getByRole('dialog').waitFor({ state: 'hidden' })
+    await onboardingPage.reload({ waitUntil: 'domcontentloaded' })
+    if (await onboardingPage.getByRole('dialog').count()) throw new Error('Completed onboarding reopened after reload')
+    await onboardingPage.getByRole('button', { name: 'Як працює Zhyvo' }).click()
+    await onboardingPage.getByRole('dialog', { name: 'Створіть кімнату' }).waitFor()
+    await onboardingPage.getByRole('button', { name: 'Закрити знайомство' }).click()
+  } finally {
+    await onboardingContext.close()
+  }
+
   await page.goto(`${baseURL}/r/${slug}`, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
 
@@ -358,7 +384,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

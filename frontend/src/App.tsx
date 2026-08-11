@@ -7,6 +7,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  CircleHelp,
   Clock3,
   Copy,
   Crown,
@@ -282,6 +283,90 @@ function AccessFields({ mode, onMode, secret, onSecret }: {
   )
 }
 
+const ONBOARDING_KEY = 'photodrop.onboarding.v1'
+
+const onboardingSteps = [
+  {
+    icon: Images,
+    title: 'Створіть кімнату',
+    body: 'Назвіть подію, виберіть термін від одного до трьох днів і за потреби захистіть вхід PIN-кодом або паролем.',
+  },
+  {
+    icon: Send,
+    title: 'Запросіть друзів',
+    body: 'Надішліть посилання або покажіть QR-код. Реєстрація не обов’язкова — учасники одразу потраплять до спільної галереї.',
+  },
+  {
+    icon: Clock3,
+    title: 'Збережіть потрібне',
+    body: 'Фото й відео завантажуються в оригінальній якості. Після завершення вибраного терміну кімната та всі її файли видаляються назавжди.',
+  },
+] as const
+
+function Onboarding({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [step, setStep] = useState(0)
+  const dialogRef = useRef<HTMLElement>(null)
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const current = onboardingSteps[step]
+  const StepIcon = current.icon
+
+  useEffect(() => {
+    if (!open) return
+    setStep(0)
+    const previousFocus = document.activeElement as HTMLElement | null
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    closeRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+      if (event.key !== 'Tab') return
+      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), a[href]')
+      if (!focusable?.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = previousOverflow
+      previousFocus?.focus()
+    }
+  }, [onClose, open])
+
+  if (!open) return null
+  return (
+    <div className="onboarding-backdrop" role="presentation">
+      <section ref={dialogRef} className="onboarding" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+        <header>
+          <Brand compact />
+          <span>{String(step + 1).padStart(2, '0')} / 03</span>
+          <button ref={closeRef} onClick={onClose} aria-label="Закрити знайомство"><X /></button>
+        </header>
+        <div className="onboarding-content">
+          <div className="onboarding-visual" aria-hidden="true"><strong>{String(step + 1).padStart(2, '0')}</strong><StepIcon /></div>
+          <div aria-live="polite"><h2 id="onboarding-title">{current.title}</h2><p>{current.body}</p></div>
+        </div>
+        <footer>
+          <div className="onboarding-dots" role="status" aria-label={`Крок ${step + 1} з 3`}>{onboardingSteps.map((_, index) => <span className={index === step ? 'is-active' : ''} key={index} />)}</div>
+          {step === 0
+            ? <button className="onboarding-skip" onClick={onClose}>Пропустити</button>
+            : <button className="onboarding-skip" onClick={() => setStep((value) => value - 1)}>Назад</button>}
+          {step < onboardingSteps.length - 1
+            ? <button className="onboarding-next" onClick={() => setStep((value) => value + 1)}>Далі</button>
+            : <button className="onboarding-next onboarding-next--final" onClick={onClose}>Почати</button>}
+        </footer>
+      </section>
+    </div>
+  )
+}
+
 function HomePage() {
   const navigate = useNavigate()
   const session = useSession()
@@ -296,6 +381,13 @@ function HomePage() {
   const [error, setError] = useState('')
   const [activeRooms, setActiveRooms] = useState<Room[]>([])
   const [roomsLoading, setRoomsLoading] = useState(Boolean(session))
+  const [onboardingOpen, setOnboardingOpen] = useState(false)
+  const onboardingCheckedRef = useRef(false)
+
+  const closeOnboarding = useCallback(() => {
+    localStorage.setItem(ONBOARDING_KEY, 'complete')
+    setOnboardingOpen(false)
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -311,6 +403,17 @@ function HomePage() {
       .finally(() => { if (active) setRoomsLoading(false) })
     return () => { active = false }
   }, [session])
+
+  useEffect(() => {
+    if (roomsLoading || onboardingCheckedRef.current) return
+    onboardingCheckedRef.current = true
+    if (localStorage.getItem(ONBOARDING_KEY) === 'complete') return
+    if (activeRooms.length > 0) {
+      localStorage.setItem(ONBOARDING_KEY, 'complete')
+      return
+    }
+    setOnboardingOpen(true)
+  }, [activeRooms.length, roomsLoading])
 
   async function createRoom(event: FormEvent) {
     event.preventDefault()
@@ -353,7 +456,10 @@ function HomePage() {
     <main className="home-shell">
       <header className="home-header">
         <Brand />
-        {session && <ProfileChip session={session} />}
+        <div className="home-header__actions">
+          <button className="how-it-works" onClick={() => setOnboardingOpen(true)} aria-label="Як працює Zhyvo"><CircleHelp size={18} /><span>Як це працює</span></button>
+          {session && <ProfileChip session={session} />}
+        </div>
       </header>
 
       {session && <BrowserSessionNotice session={session} />}
@@ -449,6 +555,7 @@ function HomePage() {
       <footer className="home-footer">
         <span>Без реєстрації</span><span>До 2 ГБ на відео</span><span>Автовидалення через 1–3 дні</span>
       </footer>
+      <Onboarding open={onboardingOpen} onClose={closeOnboarding} />
     </main>
   )
 }

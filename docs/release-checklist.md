@@ -25,6 +25,8 @@ This changes name resolution only inside the launched test browser and does not 
 
 ## Manual phone check
 
+- Open the home page in a fresh browser profile, complete the three onboarding steps, and confirm they do not reopen after refresh.
+- Reopen onboarding through `Як це працює`, then confirm a direct room invite never shows it before the room.
 - Open the Mini App from `@zhyvoappbot` and from a room invite link.
 - Create a room, leave it, and confirm it remains under `Мої кімнати`.
 - Join from a second Telegram account and confirm the room opens directly.

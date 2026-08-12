@@ -95,7 +95,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 	router.With(optionalAuth(dependencies.Tokens, dependencies.AuthService), reportLimiter.middleware(identityKey)).Post("/api/v1/problem-reports", problemReportAPI.create)
 	router.Get("/api/v1/rooms/{slug}/preview", roomAPI.preview)
 	router.Get("/api/v1/invites/{token}/preview", roomAPI.invitePreview)
-	router.Get("/invite/{slug}", inviteHandler{rooms: dependencies.RoomService, botUsername: dependencies.TelegramBotUsername}.show)
+	router.Get("/invite/{slug}", inviteHandler{rooms: dependencies.RoomService}.show)
 	router.Group(func(router chi.Router) {
 		router.Use(requireAuth(dependencies.Tokens, dependencies.AuthService))
 		router.With(roomCreateLimiter.middleware(identityKey), roomCreateIPLimiter.middleware(clientIPKey)).Post("/api/v1/rooms", roomAPI.create)

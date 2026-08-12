@@ -46,9 +46,9 @@ const lateGuestAuth = await json('/auth/anonymous', {
   method: 'POST',
   body: JSON.stringify({ display_name: 'E2E Late Guest', client_type: 'web' }),
 })
-const startLinkGuestAuth = await json('/auth/anonymous', {
+const managedLinkGuestAuth = await json('/auth/anonymous', {
   method: 'POST',
-  body: JSON.stringify({ display_name: 'E2E Start Link Guest', client_type: 'web' }),
+  body: JSON.stringify({ display_name: 'E2E Managed Link Guest', client_type: 'web' }),
 })
 const viewerAuth = await json('/auth/anonymous', {
   method: 'POST',
@@ -173,7 +173,7 @@ try {
 
   const cleanInviteContext = await browser.newContext({ viewport: { width: 375, height: 812 }, locale: 'uk-UA' })
   try {
-    await cleanInviteContext.addInitScript((storedSession) => localStorage.setItem('photodrop.session.v1', JSON.stringify(storedSession)), startLinkGuestAuth)
+    await cleanInviteContext.addInitScript((storedSession) => localStorage.setItem('photodrop.session.v1', JSON.stringify(storedSession)), guestAuth)
     const cleanInvitePage = await cleanInviteContext.newPage()
     await cleanInvitePage.goto(`${baseURL}/?tgWebAppStartParam=room_${slug}`, { waitUntil: 'domcontentloaded' })
     await cleanInvitePage.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
@@ -216,8 +216,25 @@ try {
   await shareDialog.getByRole('button', { name: 'Надіслати в Telegram' }).waitFor()
   const browserInviteURL = await shareDialog.getByRole('link', { name: 'Відкрити кімнату у браузері' }).getAttribute('href')
   if (browserInviteURL !== `${baseURL}/i/${inviteToken}`) throw new Error(`Unexpected browser invite URL: ${browserInviteURL}`)
+  const previewResponse = await fetch(`${baseURL}/invite/${inviteToken}`, { redirect: 'manual' })
+  if (previewResponse.status !== 303 || previewResponse.headers.get('location') !== `/i/${inviteToken}`) throw new Error(`Human invite URL did not redirect to the app: ${previewResponse.status} ${previewResponse.headers.get('location')}`)
+  const crawlerPreview = await fetch(`${baseURL}/invite/${inviteToken}`, { headers: { 'User-Agent': 'TelegramBot (like TwitterBot)' } })
+  const crawlerHTML = await crawlerPreview.text()
+  if (!crawlerPreview.ok || !crawlerHTML.includes('og:image') || !crawlerHTML.includes(`/i/${inviteToken}`)) throw new Error('Telegram crawler did not receive the invitation preview')
   await page.screenshot({ path: resolve(artifacts, 'share-375.png'), fullPage: true })
   await shareDialog.getByRole('button', { name: 'Закрити' }).click()
+
+  const managedLinkContext = await browser.newContext({ viewport: { width: 375, height: 812 }, locale: 'uk-UA' })
+  try {
+    await managedLinkContext.addInitScript((storedSession) => localStorage.setItem('photodrop.session.v1', JSON.stringify(storedSession)), managedLinkGuestAuth)
+    const managedLinkPage = await managedLinkContext.newPage()
+    await managedLinkPage.goto(`${baseURL}/invite/${inviteToken}`, { waitUntil: 'domcontentloaded' })
+    await managedLinkPage.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
+    await managedLinkPage.waitForURL(new RegExp(`/r/${slug}$`))
+    if (new URL(managedLinkPage.url()).pathname !== `/r/${slug}`) throw new Error(`Managed share link did not join the room: ${managedLinkPage.url()}`)
+  } finally {
+    await managedLinkContext.close()
+  }
 
   const viewerInvite = await json(`/rooms/${slug}/invites`, {
     method: 'POST', headers: { Authorization: `Bearer ${auth.access_token}` }, body: JSON.stringify({ permission: 'viewer' }),
@@ -265,9 +282,11 @@ try {
     await route.continue()
   })
   await page.locator('input[type="file"]:not([data-resume-upload])').setInputFiles(resolve('public', 'pwa-64x64.png'))
+  await page.getByRole('button', { name: 'Розгорнути завантаження' }).click()
   await page.getByRole('button', { name: 'Повторити' }).waitFor({ timeout: 20_000 })
   await page.reload({ waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
+  await page.getByRole('button', { name: 'Розгорнути завантаження' }).click()
   const restoreButton = page.getByRole('button', { name: 'Вибрати файл' })
   await restoreButton.waitFor()
   await page.screenshot({ path: resolve(artifacts, 'upload-recovery-375.png'), fullPage: true })

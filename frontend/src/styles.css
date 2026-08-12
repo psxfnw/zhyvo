@@ -737,7 +737,7 @@ a:focus-visible {
 
 .upload-queue {
   position: fixed;
-  z-index: 15;
+  z-index: 48;
   right: max(18px, env(safe-area-inset-right), var(--tg-content-safe-area-inset-right, 0px));
   bottom: max(18px, env(safe-area-inset-bottom), var(--tg-content-safe-area-inset-bottom, 0px));
   width: min(390px, calc(100vw - 36px));

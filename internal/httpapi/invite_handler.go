@@ -11,8 +11,7 @@ import (
 )
 
 type inviteHandler struct {
-	rooms       *room.Service
-	botUsername string
+	rooms *room.Service
 }
 
 var invitePage = template.Must(template.New("invite").Parse(`<!doctype html>
@@ -34,8 +33,18 @@ var invitePage = template.Must(template.New("invite").Parse(`<!doctype html>
   <link rel="canonical" href="{{.CanonicalURL}}">
   <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f5f7;color:#1d1d1f;font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(440px,calc(100% - 40px));padding:32px;border:1px solid #fff;border-radius:28px;background:rgba(255,255,255,.86);box-shadow:0 24px 70px rgba(35,68,115,.14);text-align:center}.mark{width:70px;border-radius:18px}h1{margin:20px 0 8px;font-size:30px;letter-spacing:-.04em}p{color:#6e6e73;line-height:1.5}a{margin-top:12px;padding:14px 22px;display:inline-block;border-radius:999px;background:#0071e3;color:#fff;font-weight:700;text-decoration:none}</style>
 </head>
-<body><main class="card"><img class="mark" src="{{.Origin}}/pwa-192x192.png" alt=""><h1>{{.RoomName}}</h1><p>Відкриваємо спільну галерею в Telegram…</p><a href="{{.TelegramURL}}">Відкрити Zhyvo</a></main><script>location.replace({{.TelegramURL}})</script></body>
+<body><main class="card"><img class="mark" src="{{.Origin}}/pwa-192x192.png" alt=""><h1>{{.RoomName}}</h1><p>Приєднуйтеся до спільної галереї події.</p><a href="{{.WebURL}}">Приєднатися до кімнати</a></main></body>
 </html>`))
+
+func isLinkPreviewCrawler(userAgent string) bool {
+	userAgent = strings.ToLower(userAgent)
+	for _, marker := range []string{"telegrambot", "twitterbot", "facebookexternalhit", "whatsapp", "slackbot", "discordbot", "linkedinbot"} {
+		if strings.Contains(userAgent, marker) {
+			return true
+		}
+	}
+	return false
+}
 
 func (handler inviteHandler) show(response http.ResponseWriter, request *http.Request) {
 	token := chi.URLParam(request, "slug")
@@ -62,14 +71,20 @@ func (handler inviteHandler) show(response http.ResponseWriter, request *http.Re
 		}
 	}
 	origin := proto + "://" + request.Host
-	bot := strings.TrimPrefix(handler.botUsername, "@")
-	telegramURL := "https://t.me/" + bot + "?startapp=" + startParam + token
+	webPath := "/r/" + token
+	if startParam == "invite_" {
+		webPath = "/i/" + token
+	}
+	if !isLinkPreviewCrawler(request.UserAgent()) {
+		http.Redirect(response, request, webPath, http.StatusSeeOther)
+		return
+	}
 	data := struct {
 		RoomName     string
 		Origin       string
 		CanonicalURL string
-		TelegramURL  string
-	}{preview.Name, origin, origin + request.URL.Path, telegramURL}
+		WebURL       string
+	}{preview.Name, origin, origin + request.URL.Path, origin + webPath}
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	response.Header().Set("Cache-Control", "public, max-age=60")
 	response.Header().Set("X-Robots-Tag", "noindex, nofollow")

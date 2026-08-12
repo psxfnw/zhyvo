@@ -105,6 +105,23 @@ function shouldAvoidPreReadingMobileFile() {
   return getTelegramWebApp()?.platform.toLowerCase() === 'android'
 }
 
+async function stabilizeAndroidGalleryFiles(files: File[]) {
+  if (!shouldAvoidPreReadingMobileFile()) return files
+  const candidates = files.filter((file) => uploadMimeType(file).startsWith('image/') && file.size <= 32 * 1024 * 1024)
+  const totalBytes = candidates.reduce((sum, file) => sum + file.size, 0)
+  if (!candidates.length || totalBytes > 192 * 1024 * 1024) return files
+  const stable = new Map<File, File>()
+  await Promise.all(candidates.map(async (file) => {
+    try {
+      const contents = await file.arrayBuffer()
+      stable.set(file, new File([contents], file.name, { type: uploadMimeType(file), lastModified: file.lastModified }))
+    } catch {
+      // Keep the original handle: the queue will surface a retry action if Android revoked it.
+    }
+  }))
+  return files.map((file) => stable.get(file) ?? file)
+}
+
 function activityLabel(event: RoomActivityEvent) {
   switch (event.type) {
     case 'room_created': return `${event.actor_display_name} створив(ла) кімнату`
@@ -799,7 +816,7 @@ function UploadQueue({ uploads, onCancel, onPause, onRetry, onClearCompleted }: 
   onRetry: (id: string) => void
   onClearCompleted: () => void
 }) {
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
   if (!uploads.length) return null
   const completed = uploads.filter((item) => item.state === 'done').length
   const totalBytes = uploads.reduce((sum, item) => sum + item.size_bytes, 0)
@@ -1674,7 +1691,7 @@ function RoomPage() {
 
   async function acceptFiles(files: FileList | null) {
     if (!files?.length || !room) return
-    const incoming = Array.from(files)
+    const incoming = await stabilizeAndroidGalleryFiles(Array.from(files))
     const existingFingerprints = new Set(uploadsRef.current.map((item) => `${item.filename}:${item.size_bytes}`))
     const seen = new Set(existingFingerprints)
     const rejected: UploadProgress[] = []

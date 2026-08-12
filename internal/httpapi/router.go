@@ -44,6 +44,8 @@ func NewRouter(dependencies Dependencies) http.Handler {
 	anonymousLimiter := newRateLimiter(12, 5)
 	refreshLimiter := newRateLimiter(30, 10)
 	joinLimiter := newRateLimiter(6, 3)
+	roomCreateLimiter := newRateLimiter(6, 3)
+	roomCreateIPLimiter := newRateLimiter(30, 15)
 	uploadLimiter := newRateLimiter(60, 10)
 	reportLimiter := newRateLimiter(3, 2)
 
@@ -96,7 +98,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 	router.Get("/invite/{slug}", inviteHandler{rooms: dependencies.RoomService, botUsername: dependencies.TelegramBotUsername}.show)
 	router.Group(func(router chi.Router) {
 		router.Use(requireAuth(dependencies.Tokens, dependencies.AuthService))
-		router.Post("/api/v1/rooms", roomAPI.create)
+		router.With(roomCreateLimiter.middleware(identityKey), roomCreateIPLimiter.middleware(clientIPKey)).Post("/api/v1/rooms", roomAPI.create)
 		router.Get("/api/v1/rooms", roomAPI.list)
 		router.With(joinLimiter.middleware(identityKey)).Post("/api/v1/rooms/{slug}/join", roomAPI.join)
 		router.With(joinLimiter.middleware(identityKey)).Post("/api/v1/invites/{token}/join", roomAPI.joinInvite)
@@ -118,7 +120,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		router.Delete("/api/v1/rooms/{slug}", roomAPI.delete)
 		router.With(uploadLimiter.middleware(identityKey)).Post("/api/v1/rooms/{slug}/uploads", uploadAPI.initiate)
 		router.With(uploadLimiter.middleware(identityKey)).Post("/api/v1/uploads/{uploadID}/parts", uploadAPI.parts)
-		router.Post("/api/v1/uploads/{uploadID}/complete", uploadAPI.complete)
+		router.With(uploadLimiter.middleware(identityKey)).Post("/api/v1/uploads/{uploadID}/complete", uploadAPI.complete)
 		router.Delete("/api/v1/uploads/{uploadID}", uploadAPI.abort)
 		router.Get("/api/v1/rooms/{slug}/media", uploadAPI.gallery)
 		router.Get("/api/v1/rooms/{slug}/highlights", uploadAPI.highlights)

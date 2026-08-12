@@ -2335,6 +2335,14 @@ function AdminPage() {
       <div><strong>{bytes(stats.stored_bytes)}</strong><span>оригіналів</span><small>у сховищі</small></div>
       <div className={stats.new_reports ? 'is-alert' : ''}><strong>{stats.new_reports}</strong><span>нових звернень</span><small>{stats.reports_today} сьогодні</small></div>
     </section>}
+    {stats && <section className="admin-pipeline" aria-label="Стан завантажень">
+      <header><div><h2>Завантаження</h2><p>Поточний стан медіаконвеєра за даними PostgreSQL.</p></div><span className={stats.upload_failures_today || stats.thumbnail_failures ? 'has-warning' : ''}>{stats.upload_failures_today || stats.thumbnail_failures ? 'Потрібна увага' : 'Працює нормально'}</span></header>
+      <div><strong>{stats.uploads_today}</strong><span>завершено сьогодні</span></div>
+      <div><strong>{stats.uploads_in_progress}</strong><span>завантажується зараз</span></div>
+      <div className={stats.upload_failures_today ? 'has-warning' : ''}><strong>{stats.upload_failures_today}</strong><span>відхилено сьогодні</span></div>
+      <div className={stats.thumbnail_failures ? 'has-warning' : ''}><strong>{stats.thumbnail_failures}</strong><span>помилок прев’ю</span></div>
+      <div><strong>{bytes(stats.reserved_bytes)}</strong><span>зарезервовано</span></div>
+    </section>}
     {error && <p className="form-error admin-error" role="alert">{error}</p>}
     <section className="admin-workspace">
       <div className="admin-inbox">

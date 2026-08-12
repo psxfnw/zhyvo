@@ -1,5 +1,13 @@
 # Product backlog
 
+## Upload trust boundary and operational metrics
+
+Status: implemented in preview.
+
+Room capacity is reserved transactionally before a presigned upload and released after cancellation, expiry, size mismatch, or content rejection. Photos are limited to 50 MiB, videos to 2 GiB, and each room to its database-configured file and storage quota. Room creation and upload operations have separate identity/IP rate limits.
+
+After the client uploads directly to object storage, the API reads at most the first 64 KiB and validates actual JPEG, PNG, GIF, WebP, HEIC/HEIF, AVIF, MP4/MOV/M4V, WebM, or 3GP signatures before making media visible. A disguised or malformed object is removed, marked failed, and never enters the gallery. The admin panel exposes completed, in-progress, rejected, thumbnail-failed, and reserved-storage counters from PostgreSQL without inspecting room media.
+
 ## Report a problem
 
 Status: implemented in preview.

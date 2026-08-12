@@ -192,6 +192,24 @@ try {
   const revokedPreview = await fetch(`${baseURL}/api/v1/invites/${viewerInvite.token}/preview`)
   if (revokedPreview.status !== 404) throw new Error(`Revoked invitation preview returned ${revokedPreview.status}`)
 
+  const disguisedBytes = Buffer.from('MZ this is not a PNG image')
+  const disguisedUpload = await json(`/rooms/${slug}/uploads`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${auth.access_token}`, 'Idempotency-Key': crypto.randomUUID() },
+    body: JSON.stringify({ filename: 'disguised.png', mime_type: 'image/png', size_bytes: disguisedBytes.length }),
+  })
+  const disguisedPUT = await fetch(disguisedUpload.upload.url, { method: 'PUT', headers: disguisedUpload.upload.headers, body: disguisedBytes })
+  if (!disguisedPUT.ok) throw new Error(`Disguised media storage PUT returned ${disguisedPUT.status}`)
+  const disguisedComplete = await fetch(`${baseURL}/api/v1/uploads/${disguisedUpload.upload.id}/complete`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.access_token}` }, body: JSON.stringify({ parts: [] }),
+  })
+  const disguisedError = await disguisedComplete.json()
+  if (disguisedComplete.status !== 422 || disguisedError.error?.code !== 'UPLOADED_TYPE_MISMATCH') {
+    throw new Error(`Disguised media was not rejected: ${disguisedComplete.status} ${JSON.stringify(disguisedError)}`)
+  }
+  const galleryAfterRejection = await json(`/rooms/${slug}/media?limit=50`, { headers: { Authorization: `Bearer ${auth.access_token}` } })
+  if (galleryAfterRejection.items.length !== 0) throw new Error('Rejected media appeared in the gallery')
+
   let interruptedPUTs = 0
   await page.route('**/*', async (route) => {
     if (route.request().method() === 'PUT' && interruptedPUTs < 5) {
@@ -490,7 +508,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, problemReport: true, adminDeepLink: true, roomActivation: true, expiryWarning: true, managedInvites: true, viewerPermission: true, inviteRevocation: true, recap: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, problemReport: true, adminDeepLink: true, roomActivation: true, expiryWarning: true, managedInvites: true, viewerPermission: true, inviteRevocation: true, contentTypeValidation: true, recap: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

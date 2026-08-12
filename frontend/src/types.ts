@@ -211,9 +211,13 @@ export interface AdminStats {
   active_rooms: number
   ready_media: number
   stored_bytes: number
+  reserved_bytes: number
   total_users: number
   new_reports: number
   reports_today: number
   uploads_today: number
+  upload_failures_today: number
+  uploads_in_progress: number
+  thumbnail_failures: number
   new_users_today: number
 }

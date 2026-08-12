@@ -61,14 +61,18 @@ type Report struct {
 }
 
 type Stats struct {
-	ActiveRooms   int   `json:"active_rooms"`
-	ReadyMedia    int   `json:"ready_media"`
-	StoredBytes   int64 `json:"stored_bytes"`
-	TotalUsers    int   `json:"total_users"`
-	NewReports    int   `json:"new_reports"`
-	ReportsToday  int   `json:"reports_today"`
-	UploadsToday  int   `json:"uploads_today"`
-	NewUsersToday int   `json:"new_users_today"`
+	ActiveRooms         int   `json:"active_rooms"`
+	ReadyMedia          int   `json:"ready_media"`
+	StoredBytes         int64 `json:"stored_bytes"`
+	ReservedBytes       int64 `json:"reserved_bytes"`
+	TotalUsers          int   `json:"total_users"`
+	NewReports          int   `json:"new_reports"`
+	ReportsToday        int   `json:"reports_today"`
+	UploadsToday        int   `json:"uploads_today"`
+	UploadFailuresToday int   `json:"upload_failures_today"`
+	UploadsInProgress   int   `json:"uploads_in_progress"`
+	ThumbnailFailures   int   `json:"thumbnail_failures"`
+	NewUsersToday       int   `json:"new_users_today"`
 }
 
 func New(db *pgxpool.Pool, adminIDs []int64) *Service {
@@ -224,12 +228,16 @@ func (s *Service) Stats(ctx context.Context) (Stats, error) {
 			(SELECT count(*)::int FROM rooms WHERE status = 'active' AND expires_at > now()),
 			(SELECT count(*)::int FROM media WHERE status = 'ready'),
 			(SELECT COALESCE(sum(size_bytes), 0)::bigint FROM media WHERE status = 'ready'),
+			(SELECT COALESCE(sum(reserved_storage_bytes), 0)::bigint FROM rooms WHERE status = 'active' AND expires_at > now()),
 			(SELECT count(*)::int FROM identities),
 			(SELECT count(*)::int FROM problem_reports WHERE status = 'new'),
 			(SELECT count(*)::int FROM problem_reports WHERE created_at >= date_trunc('day', now())),
 			(SELECT count(*)::int FROM media WHERE status = 'ready' AND created_at >= date_trunc('day', now())),
+			(SELECT count(*)::int FROM media WHERE status = 'failed' AND created_at >= date_trunc('day', now())),
+			(SELECT count(*)::int FROM upload_sessions WHERE status IN ('initiated', 'uploading') AND expires_at > now()),
+			(SELECT count(*)::int FROM media WHERE status = 'ready' AND thumbnail_status = 'failed'),
 			(SELECT count(*)::int FROM identities WHERE created_at >= date_trunc('day', now()))
-	`).Scan(&result.ActiveRooms, &result.ReadyMedia, &result.StoredBytes, &result.TotalUsers, &result.NewReports, &result.ReportsToday, &result.UploadsToday, &result.NewUsersToday)
+	`).Scan(&result.ActiveRooms, &result.ReadyMedia, &result.StoredBytes, &result.ReservedBytes, &result.TotalUsers, &result.NewReports, &result.ReportsToday, &result.UploadsToday, &result.UploadFailuresToday, &result.UploadsInProgress, &result.ThumbnailFailures, &result.NewUsersToday)
 	return result, err
 }
 

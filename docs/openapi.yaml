@@ -1543,15 +1543,19 @@ components:
 
     AdminStats:
       type: object
-      required: [active_rooms, ready_media, stored_bytes, total_users, new_reports, reports_today, uploads_today, new_users_today]
+      required: [active_rooms, ready_media, stored_bytes, reserved_bytes, total_users, new_reports, reports_today, uploads_today, upload_failures_today, uploads_in_progress, thumbnail_failures, new_users_today]
       properties:
         active_rooms: {type: integer, minimum: 0}
         ready_media: {type: integer, minimum: 0}
         stored_bytes: {type: integer, format: int64, minimum: 0}
+        reserved_bytes: {type: integer, format: int64, minimum: 0}
         total_users: {type: integer, minimum: 0}
         new_reports: {type: integer, minimum: 0}
         reports_today: {type: integer, minimum: 0}
         uploads_today: {type: integer, minimum: 0}
+        upload_failures_today: {type: integer, minimum: 0}
+        uploads_in_progress: {type: integer, minimum: 0}
+        thumbnail_failures: {type: integer, minimum: 0}
         new_users_today: {type: integer, minimum: 0}
 
     Download:

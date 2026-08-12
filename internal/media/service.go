@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ var (
 	ErrMediaDuplicate        = errors.New("media already exists in room")
 	ErrInvalidUploadParts    = errors.New("invalid upload parts")
 	ErrUploadedSizeMismatch  = errors.New("uploaded object size does not match declared size")
+	ErrUploadedTypeMismatch  = errors.New("uploaded object content does not match declared media type")
 	ErrIdempotencyConflict   = errors.New("idempotency key was already used with different input")
 )
 
@@ -74,6 +76,7 @@ type ObjectStore interface {
 	CompleteMultipart(context.Context, string, string, string, []objectstore.CompletedPart) error
 	AbortMultipart(context.Context, string, string) error
 	Stat(context.Context, string) (objectstore.ObjectInfo, error)
+	Open(context.Context, string) (io.ReadCloser, error)
 	Remove(context.Context, string) error
 	PresignGet(context.Context, string, string) (string, time.Time, error)
 }
@@ -342,6 +345,17 @@ func (s *Service) Complete(ctx context.Context, identityID, uploadID uuid.UUID, 
 		}
 		return MediaResult{}, ErrUploadedSizeMismatch
 	}
+	valid, err := s.validateStoredMedia(ctx, upload.objectKey, upload.contentType)
+	if err != nil {
+		return MediaResult{}, err
+	}
+	if !valid {
+		_ = s.store.Remove(ctx, upload.objectKey)
+		if releaseErr := s.releaseReservation(ctx, upload, "aborted", "failed"); releaseErr != nil {
+			return MediaResult{}, releaseErr
+		}
+		return MediaResult{}, ErrUploadedTypeMismatch
+	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -401,6 +415,20 @@ func (s *Service) Complete(ctx context.Context, identityID, uploadID uuid.UUID, 
 		return MediaResult{}, fmt.Errorf("commit upload completion: %w", err)
 	}
 	return MediaResult{ID: upload.MediaID, Status: "ready"}, nil
+}
+
+func (s *Service) validateStoredMedia(ctx context.Context, objectKey, claimedMIME string) (bool, error) {
+	reader, err := s.store.Open(ctx, objectKey)
+	if err != nil {
+		return false, err
+	}
+	defer reader.Close()
+	header := make([]byte, 64*1024)
+	count, err := io.ReadFull(reader, header)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return false, fmt.Errorf("read uploaded object header: %w", err)
+	}
+	return mediaHeaderMatchesMIME(header[:count], claimedMIME), nil
 }
 
 func (s *Service) Abort(ctx context.Context, identityID, uploadID uuid.UUID) error {

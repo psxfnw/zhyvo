@@ -23,6 +23,9 @@ export function errorMessage(error: unknown) {
     'PIN or password is incorrect': 'Неправильний PIN або пароль',
     'Room not found': 'Кімнату не знайдено',
     'Room has expired': 'Термін дії кімнати завершився',
+    'File contents do not match the selected media type': 'Вміст файлу не відповідає вибраному формату фото або відео',
+    'Room storage or file limit has been reached': 'У кімнаті закінчилось доступне місце або вичерпано ліміт файлів',
+    'Too many requests; try again later': 'Забагато запитів. Спробуйте ще раз за хвилину',
   }
   return known[error.message] ?? error.message
 }

@@ -287,6 +287,8 @@ func (handler uploadHandler) writeError(response http.ResponseWriter, request *h
 		writeAPIError(response, request, http.StatusUnprocessableEntity, "INVALID_UPLOAD_PARTS", err.Error())
 	case errors.Is(err, media.ErrUploadedSizeMismatch):
 		writeAPIError(response, request, http.StatusUnprocessableEntity, "UPLOADED_SIZE_MISMATCH", "Uploaded object size does not match declared size")
+	case errors.Is(err, media.ErrUploadedTypeMismatch):
+		writeAPIError(response, request, http.StatusUnprocessableEntity, "UPLOADED_TYPE_MISMATCH", "File contents do not match the selected media type")
 	case errors.Is(err, media.ErrIdempotencyConflict):
 		writeAPIError(response, request, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "Idempotency-Key was already used for another request")
 	case errors.Is(err, media.ErrMediaNotFound):

@@ -129,6 +129,7 @@ func NewRouter(dependencies Dependencies) http.Handler {
 		router.Delete("/api/v1/media/{mediaID}/favorite", uploadAPI.favorite)
 		router.Patch("/api/v1/media/{mediaID}", uploadAPI.updateCaption)
 		router.Put("/api/v1/rooms/{slug}/cover", uploadAPI.setCover)
+		router.Delete("/api/v1/rooms/{slug}/cover", uploadAPI.clearCover)
 		router.Post("/api/v1/media/{mediaID}/download-url", uploadAPI.download)
 		router.Delete("/api/v1/media/{mediaID}", uploadAPI.deleteMedia)
 		router.Post("/api/v1/rooms/{slug}/archive", archiveAPI.request)

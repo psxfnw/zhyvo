@@ -15,7 +15,7 @@ interface UploadOptions {
   idempotencyKey: string
   mimeType: string
   capturedAt?: string | null
-  checksum: string
+  checksum?: string
   completedParts?: Array<{ part_number: number; etag: string }>
   onProgress: (value: number) => void
   onStatus?: (message: string) => void

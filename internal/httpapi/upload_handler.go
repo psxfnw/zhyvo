@@ -231,6 +231,19 @@ func (handler uploadHandler) setCover(response http.ResponseWriter, request *htt
 	response.WriteHeader(http.StatusNoContent)
 }
 
+func (handler uploadHandler) clearCover(response http.ResponseWriter, request *http.Request) {
+	principal, ok := principalFromContext(request.Context())
+	if !ok {
+		writeAPIError(response, request, http.StatusUnauthorized, "AUTH_REQUIRED", "Authentication is required")
+		return
+	}
+	if err := handler.service.ClearCover(request.Context(), principal.IdentityID, chi.URLParam(request, "slug")); err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
 func (handler uploadHandler) principalAndUploadID(response http.ResponseWriter, request *http.Request) (uuid.UUID, uuid.UUID, bool) {
 	principal, ok := principalFromContext(request.Context())
 	if !ok {

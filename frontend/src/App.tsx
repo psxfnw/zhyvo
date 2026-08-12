@@ -16,6 +16,7 @@ import {
   Eye,
   FileImage,
   ImagePlus,
+  Info,
   Images,
   Inbox,
   Heart,
@@ -43,7 +44,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import { admin, ApiError, archives, auth, ensureIdentity, getLastAPIErrorContext, getSession, media, problemReports, rooms, streamRoomEvents } from './lib/api'
 import { bytes, errorMessage, normalizeSlug, remaining } from './lib/format'
 import { canShareFiles, fetchShareFile, isMobileDevice, saveRemoteFile, sharePreparedFiles } from './lib/download'
-import { getTelegramBootstrapError, getTelegramWebApp, managedBrowserInviteLink, managedInviteLink, openTelegramInvite, roomInviteLink, telegramBrowserLink, telegramInviteLink, telegramRoomLink } from './lib/telegram'
+import { consumeTelegramStartParam, getTelegramBootstrapError, getTelegramStartParam, getTelegramWebApp, managedBrowserInviteLink, managedInviteLink, openTelegramInvite, roomInviteLink, telegramBrowserLink, telegramInviteLink, telegramRoomLink, telegramStartPath } from './lib/telegram'
 import { uploadFile } from './lib/upload'
 import { loadUploadQueue, saveUploadQueue } from './lib/uploadQueue'
 import { mediaCapturedAt } from './lib/metadata'
@@ -94,6 +95,16 @@ function isHEIFItem(item: GalleryItem) {
   return item.mime_type === 'image/heic' || item.mime_type === 'image/heif'
 }
 
+function uploadMimeType(file: File) {
+  if (file.type) return file.type.toLowerCase() === 'image/jpg' ? 'image/jpeg' : file.type.toLowerCase()
+  const extension = file.name.split('.').at(-1)?.toLowerCase()
+  return ({ jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif', avif: 'image/avif', gif: 'image/gif', mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', m4v: 'video/x-m4v', '3gp': 'video/3gpp' } as Record<string, string>)[extension ?? ''] ?? ''
+}
+
+function shouldAvoidPreReadingMobileFile() {
+  return getTelegramWebApp()?.platform.toLowerCase() === 'android'
+}
+
 function activityLabel(event: RoomActivityEvent) {
   switch (event.type) {
     case 'room_created': return `${event.actor_display_name} створив(ла) кімнату`
@@ -131,6 +142,11 @@ function TelegramNavigation() {
     telegram.onEvent('backButtonClicked', onBack)
     return () => telegram.offEvent('backButtonClicked', onBack)
   }, [location.pathname, location.search, navigate])
+  useEffect(() => {
+    if (location.pathname !== '/') return
+    const path = telegramStartPath(getTelegramStartParam())
+    if (path) navigate(path, { replace: true })
+  }, [location.pathname, navigate])
   return null
 }
 
@@ -170,6 +186,10 @@ function ProblemReportDialog({ onClose }: { onClose: () => void }) {
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    if (description.trim().length < 10) {
+      setError('Опишіть проблему трохи детальніше — щонайменше 10 символів.')
+      return
+    }
     setBusy(true)
     setError('')
     const lastError = getLastAPIErrorContext()
@@ -205,7 +225,7 @@ function ProblemReportDialog({ onClose }: { onClose: () => void }) {
           <label className="field"><span>Контакт для відповіді — необов’язково</span><input value={contact} onChange={(event) => setContact(event.target.value)} maxLength={160} placeholder="@username або email" /></label>
           <label className="technical-consent"><input type="checkbox" checked={includeTechnical} onChange={(event) => setIncludeTechnical(event.target.checked)} /><span><strong>Додати технічну інформацію</strong><small>Сторінка, пристрій, версія Zhyvo та код останньої помилки. Без фото, паролів, токенів і назв файлів.</small></span></label>
           {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="primary-button" disabled={busy || description.trim().length < 10}><Bug size={18} /> {busy ? 'Надсилаємо…' : 'Надіслати звернення'}</button>
+          <button type="submit" className="primary-button" disabled={busy}><Bug size={18} /> {busy ? 'Надсилаємо…' : 'Надіслати звернення'}</button>
         </form>}
       </section>
     </div>
@@ -214,7 +234,37 @@ function ProblemReportDialog({ onClose }: { onClose: () => void }) {
 
 function ProblemReporter() {
   const [open, setOpen] = useState(false)
-  return <><button className="problem-report-trigger" onClick={() => setOpen(true)}><Bug size={16} /> Повідомити про проблему</button>{open && <ProblemReportDialog onClose={() => setOpen(false)} />}</>
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(() => {
+    try { return JSON.parse(localStorage.getItem('photodrop.problem-position.v1') ?? 'null') }
+    catch { return null }
+  })
+  const drag = useRef<{ pointer: number; dx: number; dy: number; moved: boolean } | null>(null)
+  const suppressClick = useRef(false)
+  function pointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+    const box = event.currentTarget.getBoundingClientRect()
+    drag.current = { pointer: event.pointerId, dx: event.clientX - box.left, dy: event.clientY - box.top, moved: false }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  function pointerMove(event: React.PointerEvent<HTMLButtonElement>) {
+    const state = drag.current
+    if (!state || state.pointer !== event.pointerId) return
+    const width = event.currentTarget.offsetWidth
+    const height = event.currentTarget.offsetHeight
+    const next = {
+      left: Math.max(8, Math.min(window.innerWidth - width - 8, event.clientX - state.dx)),
+      top: Math.max(8, Math.min(window.innerHeight - height - 8, event.clientY - state.dy)),
+    }
+    if (Math.abs(next.left - event.currentTarget.getBoundingClientRect().left) > 3 || Math.abs(next.top - event.currentTarget.getBoundingClientRect().top) > 3) state.moved = true
+    setPosition(next)
+  }
+  function pointerUp(event: React.PointerEvent<HTMLButtonElement>) {
+    const state = drag.current
+    if (!state || state.pointer !== event.pointerId) return
+    suppressClick.current = state.moved
+    drag.current = null
+    if (position) localStorage.setItem('photodrop.problem-position.v1', JSON.stringify(position))
+  }
+  return <><button className="problem-report-trigger" style={position ? { ...position, right: 'auto', bottom: 'auto' } : undefined} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onClick={() => { if (suppressClick.current) { suppressClick.current = false; return }; setOpen(true) }} title="Можна перетягнути в зручне місце"><Bug size={16} /> Повідомити про проблему</button>{open && <ProblemReportDialog onClose={() => setOpen(false)} />}</>
 }
 
 function ProfileChip({ session }: { session: Session }) {
@@ -312,11 +362,11 @@ function TelegramLinkConfirmPage() {
   const [error, setError] = useState('')
   async function approve() {
     setStatus('busy'); setError('')
-    try { await auth.approveBrowserLink(token); sessionStorage.setItem(approvedTokenKey, token); setStatus('done'); getTelegramWebApp()?.HapticFeedback?.impactOccurred('medium') }
+    try { await auth.approveBrowserLink(token); sessionStorage.setItem(approvedTokenKey, token); consumeTelegramStartParam(); setStatus('done'); getTelegramWebApp()?.HapticFeedback?.impactOccurred('medium') }
     catch (cause) { setError(errorMessage(cause)); setStatus('ready') }
   }
   if (!getTelegramWebApp() || session?.identity.kind !== 'telegram') return <main className="status-page"><Brand /><h1>Відкрийте цей запит у Telegram</h1><p>Підтвердження доступне лише всередині Mini App Zhyvo.</p></main>
-  return <main className="link-flow"><section className="link-flow__card"><div className="link-flow__top"><Brand /><div className="link-flow__step">{status === 'done' ? '03 / 03' : '02 / 03'}</div></div>{status === 'done' ? <><ShieldCheck className="link-flow__success" size={52} /><h1>Браузер підключено</h1><p>Вкладка браузера автоматично повернеться на головну Zhyvo.</p><button className="primary-button" onClick={() => navigate('/', { replace: true })}>На головну Zhyvo</button></> : <><h1>Підключити браузер?</h1><p>Браузер отримає доступ до ваших кімнат Zhyvo. Доступу до повідомлень, контактів і номера Telegram не буде.</p><button className="primary-button" onClick={() => void approve()} disabled={status === 'busy'}><ShieldCheck size={18} />{status === 'busy' ? 'Підтверджуємо…' : 'Підтвердити'}</button>{error && <p className="form-error" role="alert">{error}</p>}</>}</section></main>
+  return <main className="link-flow"><section className="link-flow__card"><div className="link-flow__top"><Brand /><div className="link-flow__step">{status === 'done' ? '03 / 03' : '02 / 03'}</div></div>{status === 'done' ? <><ShieldCheck className="link-flow__success" size={52} /><h1>Браузер підключено</h1><p>Вкладка браузера автоматично повернеться на головну Zhyvo.</p><button className="primary-button" onClick={() => { consumeTelegramStartParam(); navigate('/', { replace: true }) }}>На головну Zhyvo</button></> : <><h1>Підключити браузер?</h1><p>Браузер отримає доступ до ваших кімнат Zhyvo. Доступу до повідомлень, контактів і номера Telegram не буде.</p><button className="primary-button" onClick={() => void approve()} disabled={status === 'busy'}><ShieldCheck size={18} />{status === 'busy' ? 'Підтверджуємо…' : 'Підтвердити'}</button>{error && <p className="form-error" role="alert">{error}</p>}</>}</section></main>
 }
 
 function AccessFields({ mode, onMode, secret, onSecret }: {
@@ -662,6 +712,19 @@ function JoinRoom({ preview, onJoined, joinRoom }: { preview: RoomPreview; onJoi
   const [secret, setSecret] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const autoJoinStarted = useRef(false)
+
+  useEffect(() => {
+    if (!session || preview.access_mode !== 'public' || !preview.accepting_members || autoJoinStarted.current) return
+    autoJoinStarted.current = true
+    setBusy(true)
+    const action = joinRoom ? joinRoom('') : rooms.join(preview.slug, '')
+    action.then(({ room }) => onJoined(room)).catch((cause) => {
+      setError(errorMessage(cause))
+      setBusy(false)
+      autoJoinStarted.current = false
+    })
+  }, [joinRoom, onJoined, preview.access_mode, preview.accepting_members, preview.slug, session])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -736,22 +799,24 @@ function UploadQueue({ uploads, onCancel, onPause, onRetry, onClearCompleted }: 
   onRetry: (id: string) => void
   onClearCompleted: () => void
 }) {
+  const [collapsed, setCollapsed] = useState(false)
   if (!uploads.length) return null
   const completed = uploads.filter((item) => item.state === 'done').length
   const totalBytes = uploads.reduce((sum, item) => sum + item.size_bytes, 0)
   const uploadedBytes = uploads.reduce((sum, item) => sum + item.size_bytes * item.progress / 100, 0)
   const totalProgress = totalBytes ? Math.round(uploadedBytes / totalBytes * 100) : 0
   return (
-    <aside className="upload-queue" aria-live="polite">
+    <aside className={`upload-queue ${collapsed ? 'upload-queue--collapsed' : ''}`} aria-live="polite">
       <div className="upload-queue__title">
         <div><Upload size={17} /><strong>Завантаження</strong></div>
         <div className="upload-queue__summary">
           <span>{completed} із {uploads.length} · {totalProgress}%</span>
-          {completed > 0 && <button type="button" onClick={onClearCompleted} aria-label="Приховати завершені"><X size={17} /></button>}
+          {completed > 0 && <button type="button" onClick={onClearCompleted} aria-label="Приховати завершені"><Check size={16} /></button>}
+          <button type="button" onClick={() => setCollapsed((value) => !value)} aria-label={collapsed ? 'Розгорнути завантаження' : 'Згорнути завантаження'}>{collapsed ? <ChevronLeft size={17} /> : <X size={17} />}</button>
         </div>
       </div>
       <div className="upload-queue__total-progress" aria-label={`Загальний прогрес ${totalProgress}%`}><span style={{ width: `${totalProgress}%` }} /></div>
-      {uploads.map((item) => (
+      {!collapsed && uploads.map((item) => (
         <div className="upload-row" key={item.id}>
           <div>
             <div><strong>{item.filename}</strong><span>{item.state === 'done' ? item.message ?? 'Готово' : item.state === 'error' ? item.message : item.message ?? `${item.progress}%`}</span></div>
@@ -1070,7 +1135,7 @@ function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, 
   onSelect: (item: GalleryItem) => void
   onClose: () => void
   onFavorite: (item: GalleryItem) => Promise<void>
-  onSetCover: (item: GalleryItem) => Promise<void>
+  onSetCover: (item: GalleryItem, enabled: boolean) => Promise<void>
   onCaption: (item: GalleryItem, caption: string) => Promise<void>
   onError: (message: string) => void
 }) {
@@ -1079,6 +1144,7 @@ function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, 
   const [loading, setLoading] = useState(true)
   const [favoriteBusy, setFavoriteBusy] = useState(false)
   const [coverBusy, setCoverBusy] = useState(false)
+  const [infoOpen, setInfoOpen] = useState(false)
   const [captionEditing, setCaptionEditing] = useState(false)
   const [captionDraft, setCaptionDraft] = useState(item.caption ?? '')
   const [captionBusy, setCaptionBusy] = useState(false)
@@ -1095,6 +1161,8 @@ function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, 
     setCaptionEditing(false)
     setCaptionError('')
   }, [item.caption, item.id])
+
+  useEffect(() => setInfoOpen(false), [item.id])
 
   useEffect(() => {
     let active = true
@@ -1143,7 +1211,12 @@ function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, 
         <div><strong id="viewer-title">{item.original_filename}</strong><span>{item.uploaded_by.display_name} · {bytes(item.size_bytes)}</span></div>
         <div className="viewer-actions">
           <button className={`viewer-favorite ${item.favorited ? 'is-active' : ''}`} disabled={favoriteBusy} aria-pressed={item.favorited} aria-label={item.favorited ? 'Прибрати з обраного' : 'Додати в обране'} onClick={() => { setFavoriteBusy(true); void onFavorite(item).finally(() => setFavoriteBusy(false)) }}><Heart size={19} fill={item.favorited ? 'currentColor' : 'none'} /><span>{item.favorite_count}</span></button>
-          {canSetCover && item.media_type === 'image' && <button className={`icon-button ${item.is_cover ? 'is-active' : ''}`} disabled={coverBusy || item.is_cover} aria-label={item.is_cover ? 'Поточна обкладинка кімнати' : 'Зробити обкладинкою кімнати'} onClick={() => { setCoverBusy(true); void onSetCover(item).finally(() => setCoverBusy(false)) }}><Crown /></button>}
+          <button className={`icon-button ${infoOpen ? 'is-active' : ''}`} aria-pressed={infoOpen} aria-label={infoOpen ? 'Сховати інформацію про файл' : 'Показати інформацію про файл'} onClick={() => setInfoOpen((value) => !value)}><Info /></button>
+          {canSetCover && item.media_type === 'image' && <button className={`icon-button ${item.is_cover ? 'is-active' : ''}`} disabled={coverBusy} aria-label={item.is_cover ? 'Прибрати обкладинку кімнати' : 'Зробити фото обкладинкою кімнати'} onClick={() => {
+            if (!window.confirm(item.is_cover ? 'Прибрати це фото з обкладинки кімнати?' : 'Зробити це фото обкладинкою кімнати?')) return
+            setCoverBusy(true)
+            void onSetCover(item, !item.is_cover).finally(() => setCoverBusy(false))
+          }}><Images /></button>}
           {source && <button className="icon-button" onClick={() => void saveRemoteFile({ ...source, mimeType: item.mime_type }).catch((cause) => onError(errorMessage(cause)))} aria-label="Завантажити оригінал"><ArrowDownToLine /></button>}
           <button ref={closeRef} className="icon-button" onClick={onClose} aria-label="Закрити перегляд"><X /></button>
         </div>
@@ -1161,7 +1234,7 @@ function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, 
         {previous && <button className="viewer-nav viewer-nav--previous" onClick={() => onSelect(previous)} aria-label="Попередній файл"><ChevronLeft /></button>}
         {next && <button className="viewer-nav viewer-nav--next" onClick={() => onSelect(next)} aria-label="Наступний файл"><ChevronRight /></button>}
       </div>
-      <footer className="viewer-info">
+      {infoOpen && <footer className="viewer-info">
         <div className="viewer-caption">
           {captionEditing ? (
             <form onSubmit={(event) => void saveCaption(event)}>
@@ -1185,7 +1258,7 @@ function MediaViewer({ item, items, canSetCover, onSelect, onClose, onFavorite, 
           <div><dt>Файл</dt><dd>{format} · {bytes(item.size_bytes)}</dd></div>
           <div className="viewer-details__index"><dt>Кадр</dt><dd>{index + 1} / {items.length}</dd></div>
         </dl>
-      </footer>
+      </footer>}
     </div>
   )
 }
@@ -1549,12 +1622,18 @@ function RoomPage() {
     setUploads((current) => current.map((item) => item.id === queueID ? { ...item, state: 'uploading', message: undefined, canRetry: false } : item))
     try {
       let checksum = queueItem.checksum
-      if (!checksum || verifyStoredChecksum) {
+      if ((!checksum || verifyStoredChecksum) && !(shouldAvoidPreReadingMobileFile() && !verifyStoredChecksum)) {
         setUploads((current) => current.map((item) => item.id === queueID ? { ...item, message: 'Перевіряємо файл', progress: 0 } : item))
-        const calculated = await checksumFile(file, controller.signal, (progress) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, progress: Math.max(1, Math.round(progress / 10)) } : item)))
-        if (verifyStoredChecksum && checksum && calculated !== checksum) throw new Error('Це інший файл — його вміст не збігається')
-        checksum = calculated
-        setUploads((current) => current.map((item) => item.id === queueID ? { ...item, checksum } : item))
+        try {
+          const calculated = await checksumFile(file, controller.signal, (progress) => setUploads((current) => current.map((item) => item.id === queueID ? { ...item, progress: Math.max(1, Math.round(progress / 10)) } : item)))
+          if (verifyStoredChecksum && checksum && calculated !== checksum) throw new Error('Це інший файл — його вміст не збігається')
+          checksum = calculated
+          setUploads((current) => current.map((item) => item.id === queueID ? { ...item, checksum } : item))
+        } catch (cause) {
+          if (verifyStoredChecksum || controller.signal.aborted) throw cause
+          checksum = undefined
+          setUploads((current) => current.map((item) => item.id === queueID ? { ...item, progress: 0, message: 'Передаємо без попередньої перевірки' } : item))
+        }
       }
       await uploadFile(slug, file, {
         signal: controller.signal,
@@ -1600,24 +1679,25 @@ function RoomPage() {
     const seen = new Set(existingFingerprints)
     const rejected: UploadProgress[] = []
     const accepted = incoming.filter((file) => {
+      const mimeType = uploadMimeType(file)
       const fingerprint = `${file.name}:${file.size}`
-      const message = file.type.startsWith('image/') && file.size > 50 * 1024 * 1024
+      const message = mimeType.startsWith('image/') && file.size > 50 * 1024 * 1024
         ? 'Фото перевищує ліміт 50 МБ'
         : file.size > 2 * 1024 * 1024 * 1024
         ? 'Файл перевищує ліміт 2 ГБ'
-        : !file.type.startsWith('image/') && !file.type.startsWith('video/')
+        : !mimeType.startsWith('image/') && !mimeType.startsWith('video/')
           ? 'Підтримуються лише фото та відео'
           : seen.has(fingerprint) ? 'Цей файл уже додано до черги' : ''
       if (!message) { seen.add(fingerprint); return true }
       rejected.push({ id: uuid(), filename: file.name, size_bytes: file.size, mime_type: file.type, last_modified: file.lastModified, idempotency_key: uuid(), created_at: new Date().toISOString(), progress: 0, state: 'error', message, canRetry: false })
       return false
     })
-    const capturedDates = await Promise.all(accepted.map(mediaCapturedAt))
+    const capturedDates = shouldAvoidPreReadingMobileFile() ? accepted.map(() => null) : await Promise.all(accepted.map(mediaCapturedAt))
     const queue: UploadProgress[] = accepted.map((file, index) => ({
       id: uuid(),
       filename: file.name,
       size_bytes: file.size,
-      mime_type: file.type,
+      mime_type: uploadMimeType(file),
       last_modified: file.lastModified,
       idempotency_key: uuid(),
       created_at: new Date().toISOString(),
@@ -1964,11 +2044,12 @@ function RoomPage() {
     }
   }
 
-  async function setRoomCover(item: GalleryItem) {
+  async function setRoomCover(item: GalleryItem, enabled: boolean) {
     setError('')
     try {
-      await media.setCover(slug, item.id)
-      setGallery((current) => current.map((candidate) => ({ ...candidate, is_cover: candidate.id === item.id })))
+      if (enabled) await media.setCover(slug, item.id)
+      else await media.clearCover(slug)
+      setGallery((current) => current.map((candidate) => ({ ...candidate, is_cover: enabled && candidate.id === item.id })))
     } catch (cause) {
       setError(errorMessage(cause))
       throw cause

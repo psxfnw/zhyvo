@@ -335,6 +335,20 @@ func (s *Service) SetCover(ctx context.Context, identityID uuid.UUID, slug strin
 	return nil
 }
 
+func (s *Service) ClearCover(ctx context.Context, identityID uuid.UUID, slug string) error {
+	roomID, role, err := s.roomMembership(ctx, identityID, slug)
+	if err != nil {
+		return err
+	}
+	if role != "owner" {
+		return ErrRoomOwnerRequired
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE rooms SET cover_media_id = NULL WHERE id = $1`, roomID); err != nil {
+		return fmt.Errorf("clear room cover: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) Download(ctx context.Context, identityID, mediaID uuid.UUID) (Download, error) {
 	var storageKey, filename, status, roomStatus string
 	var roomExpiry time.Time

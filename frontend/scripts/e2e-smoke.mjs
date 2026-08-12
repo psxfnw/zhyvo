@@ -46,6 +46,10 @@ const lateGuestAuth = await json('/auth/anonymous', {
   method: 'POST',
   body: JSON.stringify({ display_name: 'E2E Late Guest', client_type: 'web' }),
 })
+const startLinkGuestAuth = await json('/auth/anonymous', {
+  method: 'POST',
+  body: JSON.stringify({ display_name: 'E2E Start Link Guest', client_type: 'web' }),
+})
 const viewerAuth = await json('/auth/anonymous', {
   method: 'POST',
   body: JSON.stringify({ display_name: 'E2E Viewer', client_type: 'web' }),
@@ -122,7 +126,9 @@ try {
   await problemDialog.getByLabel('Опишіть проблему').fill('Тестовий опис проблеми із завантаженням')
   await problemDialog.getByText('Без фото, паролів, токенів і назв файлів.').waitFor()
   await page.screenshot({ path: resolve(artifacts, 'problem-report-375.png') })
-  await problemDialog.getByRole('button', { name: 'Закрити' }).click()
+  await problemDialog.getByRole('button', { name: 'Надіслати звернення' }).click()
+  await problemDialog.getByRole('heading', { name: 'Звернення отримано' }).waitFor()
+  await problemDialog.getByRole('button', { name: 'Готово' }).click()
   const adminReportID = crypto.randomUUID()
   await page.goto(`${baseURL}/?tgWebAppStartParam=admin_report_${adminReportID}`, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Потрібен Telegram' }).waitFor()
@@ -164,6 +170,18 @@ try {
   await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
   await realtimeResponse
   if (new URL(page.url()).pathname !== `/r/${slug}`) throw new Error(`Telegram start parameter did not route to room: ${page.url()}`)
+
+  const cleanInviteContext = await browser.newContext({ viewport: { width: 375, height: 812 }, locale: 'uk-UA' })
+  try {
+    await cleanInviteContext.addInitScript((storedSession) => localStorage.setItem('photodrop.session.v1', JSON.stringify(storedSession)), startLinkGuestAuth)
+    const cleanInvitePage = await cleanInviteContext.newPage()
+    await cleanInvitePage.goto(`${baseURL}/?tgWebAppStartParam=room_${slug}`, { waitUntil: 'domcontentloaded' })
+    await cleanInvitePage.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
+    await cleanInvitePage.waitForURL(new RegExp(`/r/${slug}$`))
+    if (await cleanInvitePage.getByRole('dialog', { name: 'Створіть кімнату' }).count()) throw new Error('Room start parameter displayed create-room onboarding')
+  } finally {
+    await cleanInviteContext.close()
+  }
 
   const portraitOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   if (portraitOverflow > 1) throw new Error(`375px layout has ${portraitOverflow}px horizontal overflow`)
@@ -370,6 +388,7 @@ try {
   const viewer = page.getByRole('dialog', { name: 'pwa-64x64.png' })
   await viewer.waitFor()
   if (!page.url().includes('media=')) throw new Error('Media viewer did not update the URL')
+  await viewer.getByRole('button', { name: 'Показати інформацію про файл' }).click()
   await viewer.getByRole('button', { name: 'Додати підпис' }).click()
   await viewer.getByLabel('Підпис').fill('Перший кадр події')
   await viewer.getByRole('button', { name: 'Зберегти', exact: true }).click()
@@ -379,11 +398,15 @@ try {
     method: 'PATCH', headers: { Authorization: `Bearer ${auth.access_token}` }, body: JSON.stringify({ caption: 'Оновлено наживо' }),
   })
   await viewer.getByText('Оновлено наживо').waitFor({ timeout: 4000 })
-  await page.getByRole('button', { name: 'Зробити обкладинкою кімнати' }).click()
-  await page.getByRole('button', { name: 'Поточна обкладинка кімнати' }).waitFor()
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Зробити фото обкладинкою кімнати' }).click()
+  await page.getByRole('button', { name: 'Прибрати обкладинку кімнати' }).waitFor()
   await page.screenshot({ path: resolve(artifacts, 'viewer-375.png') })
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Прибрати обкладинку кімнати' }).click()
+  await page.getByRole('button', { name: 'Зробити фото обкладинкою кімнати' }).waitFor()
   await page.getByRole('button', { name: 'Закрити перегляд' }).click()
-  await page.getByText('Обкладинка').waitFor()
+  if (await page.getByText('Обкладинка').count()) throw new Error('Room cover was not removed')
   await page.goto(`${baseURL}/r/${slug}/recap`, { waitUntil: 'domcontentloaded' })
   await page.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
   await page.getByRole('region', { name: 'Статистика події' }).getByText('1', { exact: true }).first().waitFor()

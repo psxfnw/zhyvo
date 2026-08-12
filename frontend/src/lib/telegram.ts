@@ -31,6 +31,7 @@ declare global {
 let webApp: TelegramWebApp | null = null
 let bootstrapError = ''
 const TELEGRAM_SESSION_FINGERPRINT = 'photodrop.telegram.session.v1'
+const CONSUMED_START_PARAM = 'photodrop.telegram.consumed-start-param.v1'
 
 function startParamFromURLParameters(parameters: URLSearchParams) {
   const direct = parameters.get('tgWebAppStartParam')
@@ -51,30 +52,25 @@ export function getTelegramStartParam(candidate = window.Telegram?.WebApp) {
   ].find((value) => value?.trim())?.trim() ?? ''
 }
 
-function applyTelegramStartRoute(startParam: string) {
-	if (location.pathname === '/' && startParam === 'admin') {
-		history.replaceState(history.state, '', '/admin/reports')
-		return
-	}
+export function telegramStartPath(startParam: string) {
+	if (startParam === 'admin') return '/admin/reports'
 	const adminReportID = startParam.match(/^admin_report_([0-9a-f-]{36})$/i)?.[1]
-	if (location.pathname === '/' && adminReportID) {
-		history.replaceState(history.state, '', `/admin/reports/${encodeURIComponent(adminReportID)}`)
-		return
-	}
+	if (adminReportID) return `/admin/reports/${encodeURIComponent(adminReportID)}`
 	const linkToken = startParam.match(/^link_([A-Za-z0-9_-]{43})$/)?.[1]
-	if (location.pathname === '/' && linkToken) {
-		history.replaceState(history.state, '', `/auth/telegram/link-confirm?token=${encodeURIComponent(linkToken)}`)
-		return
-	}
-  const inviteToken = startParam.match(/^invite_([A-Za-z0-9_-]{43})$/)?.[1]
-  if (location.pathname === '/' && inviteToken) {
-    history.replaceState(history.state, '', `/i/${encodeURIComponent(inviteToken)}`)
-    return
-  }
-  const slug = startParam.replace(/^room[_-]/i, '').toUpperCase()
-  if (location.pathname === '/' && /^[A-Z0-9]{6,12}$/.test(slug)) {
-    history.replaceState(history.state, '', `/r/${slug}`)
-  }
+	if (linkToken && sessionStorage.getItem(CONSUMED_START_PARAM) !== startParam) return `/auth/telegram/link-confirm?token=${encodeURIComponent(linkToken)}`
+	const inviteToken = startParam.match(/^invite_([A-Za-z0-9_-]{43})$/)?.[1]
+	if (inviteToken) return `/i/${encodeURIComponent(inviteToken)}`
+	const slug = startParam.replace(/^room[_-]/i, '').toUpperCase()
+	return /^[A-Z0-9]{6,12}$/.test(slug) ? `/r/${slug}` : ''
+}
+
+export function consumeTelegramStartParam(startParam = getTelegramStartParam()) {
+	if (startParam) sessionStorage.setItem(CONSUMED_START_PARAM, startParam)
+}
+
+function applyTelegramStartRoute(startParam: string) {
+	const path = telegramStartPath(startParam)
+	if (location.pathname === '/' && path) history.replaceState(history.state, '', path)
 }
 
 function applyTheme() {

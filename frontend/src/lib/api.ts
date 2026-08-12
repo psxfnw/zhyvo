@@ -299,6 +299,7 @@ export const media = {
   favorite: (id: string, enabled: boolean) => api<{ favorite_count: number; favorited: boolean }>(`/media/${id}/favorite`, { method: enabled ? 'PUT' : 'DELETE' }),
   updateCaption: (id: string, caption: string) => api<{ caption: string | null; caption_updated_at: string | null }>(`/media/${id}`, { method: 'PATCH', body: JSON.stringify({ caption }) }),
   setCover: (slug: string, id: string) => api<void>(`/rooms/${slug}/cover`, { method: 'PUT', body: JSON.stringify({ media_id: id }) }),
+  clearCover: (slug: string) => api<void>(`/rooms/${slug}/cover`, { method: 'DELETE' }),
   remove: (id: string) => api<void>(`/media/${id}`, { method: 'DELETE' }),
   initiate: (slug: string, file: File, signal?: AbortSignal, idempotencyKey: string = crypto.randomUUID(), mimeType = file.type, capturedAt?: string | null, checksum?: string) => api<{ upload: UploadTicket; media_id: string }>(`/rooms/${slug}/uploads`, {
     method: 'POST',

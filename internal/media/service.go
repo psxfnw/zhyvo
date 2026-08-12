@@ -394,16 +394,17 @@ func (s *Service) Complete(ctx context.Context, identityID, uploadID uuid.UUID, 
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO telegram_notification_outbox (room_id, telegram_user_id, event_type, payload, dedupe_key, available_at)
-		SELECT room.id, owner.telegram_user_id, 'media_uploaded', jsonb_build_object(
+		SELECT room.id, recipient.telegram_user_id, 'media_uploaded', jsonb_build_object(
 			'room_name', room.name, 'room_slug', room.slug, 'actor_name', uploader.display_name,
 			'filename', media.original_filename, 'count', 1
-		), 'media:' || room.id || ':' || uploader.id || ':' || floor(extract(epoch from now()) / 300)::bigint, now() + interval '15 seconds'
+		), 'media:' || room.id || ':' || uploader.id || ':' || recipient.id || ':' || floor(extract(epoch from now()) / 300)::bigint, now() + interval '15 seconds'
 		FROM media
 		JOIN rooms room ON room.id = media.room_id
 		JOIN identities uploader ON uploader.id = media.uploader_identity_id
-		JOIN identities owner ON owner.id = room.owner_identity_id
-		JOIN room_notification_preferences preference ON preference.room_id = room.id AND preference.identity_id = owner.id
-		WHERE media.id = $1 AND preference.telegram_enabled AND owner.telegram_user_id IS NOT NULL AND owner.id <> uploader.id
+		JOIN room_notification_preferences preference ON preference.room_id = room.id
+		JOIN identities recipient ON recipient.id = preference.identity_id
+		WHERE media.id = $1 AND preference.telegram_enabled AND preference.new_media_enabled
+		  AND recipient.telegram_user_id IS NOT NULL AND recipient.id <> uploader.id
 		ON CONFLICT (dedupe_key) DO UPDATE
 		SET payload = jsonb_set(telegram_notification_outbox.payload, '{count}', to_jsonb(COALESCE((telegram_notification_outbox.payload->>'count')::int, 1) + 1)),
 		    available_at = now() + interval '15 seconds'

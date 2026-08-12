@@ -103,8 +103,19 @@ type BlockedMember struct {
 }
 
 type NotificationSettings struct {
-	TelegramAvailable bool `json:"telegram_available"`
-	TelegramEnabled   bool `json:"telegram_enabled"`
+	TelegramAvailable   bool `json:"telegram_available"`
+	TelegramEnabled     bool `json:"telegram_enabled"`
+	NewMediaEnabled     bool `json:"new_media_enabled"`
+	ExpiryEnabled       bool `json:"expiry_enabled"`
+	MemberJoinedEnabled bool `json:"member_joined_enabled"`
+	IsOwner             bool `json:"is_owner"`
+}
+
+type NotificationUpdate struct {
+	TelegramEnabled     *bool
+	NewMediaEnabled     *bool
+	ExpiryEnabled       *bool
+	MemberJoinedEnabled *bool
 }
 
 type MembersResult struct {
@@ -429,14 +440,15 @@ func (s *Service) join(ctx context.Context, identityID uuid.UUID, slug, secret, 
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO telegram_notification_outbox (room_id, telegram_user_id, event_type, payload)
-			SELECT room.id, owner.telegram_user_id, 'member_joined', jsonb_build_object(
+			SELECT room.id, recipient.telegram_user_id, 'member_joined', jsonb_build_object(
 				'room_name', room.name, 'room_slug', room.slug, 'actor_name', actor.display_name
 			)
 			FROM rooms room
-			JOIN identities owner ON owner.id = room.owner_identity_id
 			JOIN identities actor ON actor.id = $2
-			JOIN room_notification_preferences preference ON preference.room_id = room.id AND preference.identity_id = owner.id
-			WHERE room.id = $1 AND preference.telegram_enabled AND owner.telegram_user_id IS NOT NULL
+			JOIN room_notification_preferences preference ON preference.room_id = room.id
+			JOIN identities recipient ON recipient.id = preference.identity_id
+			WHERE room.id = $1 AND preference.telegram_enabled AND preference.member_joined_enabled
+			  AND recipient.telegram_user_id IS NOT NULL AND recipient.id <> actor.id
 		`, roomID, identityID); err != nil {
 			return Room{}, fmt.Errorf("enqueue member notification: %w", err)
 		}
@@ -485,60 +497,111 @@ func (s *Service) Get(ctx context.Context, identityID uuid.UUID, slug string) (R
 
 func (s *Service) Notifications(ctx context.Context, identityID uuid.UUID, slug string) (NotificationSettings, error) {
 	var result NotificationSettings
-	var role string
 	err := s.db.QueryRow(ctx, `
-		SELECT rm.role, identity.telegram_user_id IS NOT NULL,
-		       COALESCE(preference.telegram_enabled, false)
+		SELECT identity.telegram_user_id IS NOT NULL,
+		       COALESCE(preference.telegram_enabled, false),
+		       COALESCE(preference.new_media_enabled, true),
+		       COALESCE(preference.expiry_enabled, true),
+		       COALESCE(preference.member_joined_enabled, rm.role = 'owner'),
+		       rm.role = 'owner'
 		FROM rooms room
 		JOIN room_members rm ON rm.room_id = room.id AND rm.identity_id = $1
 		JOIN identities identity ON identity.id = $1
 		LEFT JOIN room_notification_preferences preference ON preference.room_id = room.id AND preference.identity_id = $1
 		WHERE room.slug = $2 AND room.status = 'active' AND room.expires_at > $3
-	`, identityID, normalizeSlug(slug), s.now()).Scan(&role, &result.TelegramAvailable, &result.TelegramEnabled)
+	`, identityID, normalizeSlug(slug), s.now()).Scan(&result.TelegramAvailable, &result.TelegramEnabled, &result.NewMediaEnabled, &result.ExpiryEnabled, &result.MemberJoinedEnabled, &result.IsOwner)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return NotificationSettings{}, ErrNotFound
 	}
 	if err != nil {
 		return NotificationSettings{}, fmt.Errorf("get notification settings: %w", err)
 	}
-	if role != "owner" {
-		return NotificationSettings{}, ErrOwnerRequired
-	}
 	return result, nil
 }
 
-func (s *Service) UpdateNotifications(ctx context.Context, identityID uuid.UUID, slug string, enabled bool) (NotificationSettings, error) {
+func (s *Service) UpdateNotifications(ctx context.Context, identityID uuid.UUID, slug string, input NotificationUpdate) (NotificationSettings, error) {
+	if input.TelegramEnabled == nil && input.NewMediaEnabled == nil && input.ExpiryEnabled == nil && input.MemberJoinedEnabled == nil {
+		return NotificationSettings{}, fmt.Errorf("%w: at least one notification setting is required", ErrInvalidInput)
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return NotificationSettings{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	roomID, err := s.lockOwnedRoom(ctx, tx, identityID, slug)
+	var roomID uuid.UUID
+	var status, role string
+	var expiresAt time.Time
+	var telegramAvailable, enabled, newMedia, expiry, memberJoined bool
+	err = tx.QueryRow(ctx, `
+		SELECT room.id, room.status, room.expires_at, member.role,
+		       identity.telegram_user_id IS NOT NULL,
+		       COALESCE(preference.telegram_enabled, false),
+		       COALESCE(preference.new_media_enabled, true),
+		       COALESCE(preference.expiry_enabled, true),
+		       COALESCE(preference.member_joined_enabled, member.role = 'owner')
+		FROM rooms room
+		JOIN room_members member ON member.room_id = room.id AND member.identity_id = $1
+		JOIN identities identity ON identity.id = $1
+		LEFT JOIN room_notification_preferences preference ON preference.room_id = room.id AND preference.identity_id = $1
+		WHERE room.slug = $2
+		FOR UPDATE OF room
+	`, identityID, normalizeSlug(slug)).Scan(&roomID, &status, &expiresAt, &role, &telegramAvailable, &enabled, &newMedia, &expiry, &memberJoined)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return NotificationSettings{}, ErrNotFound
+	}
 	if err != nil {
 		return NotificationSettings{}, err
 	}
-	var telegramAvailable bool
-	if err := tx.QueryRow(ctx, `SELECT telegram_user_id IS NOT NULL FROM identities WHERE id = $1`, identityID).Scan(&telegramAvailable); err != nil {
-		return NotificationSettings{}, err
+	if status != "active" || !expiresAt.After(s.now()) {
+		return NotificationSettings{}, ErrExpired
+	}
+	if input.TelegramEnabled != nil {
+		enabled = *input.TelegramEnabled
+	}
+	if input.NewMediaEnabled != nil {
+		newMedia = *input.NewMediaEnabled
+	}
+	if input.ExpiryEnabled != nil {
+		expiry = *input.ExpiryEnabled
+	}
+	if input.MemberJoinedEnabled != nil {
+		memberJoined = *input.MemberJoinedEnabled
 	}
 	if enabled && !telegramAvailable {
 		return NotificationSettings{}, fmt.Errorf("%w: link a Telegram account before enabling notifications", ErrInvalidInput)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO room_notification_preferences (room_id, identity_id, telegram_enabled)
-		VALUES ($1, $2, $3)
+		INSERT INTO room_notification_preferences (room_id, identity_id, telegram_enabled, new_media_enabled, expiry_enabled, member_joined_enabled)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (room_id, identity_id) DO UPDATE
-		SET telegram_enabled = EXCLUDED.telegram_enabled, updated_at = now()
-	`, roomID, identityID, enabled); err != nil {
+		SET telegram_enabled = EXCLUDED.telegram_enabled,
+		    new_media_enabled = EXCLUDED.new_media_enabled,
+		    expiry_enabled = EXCLUDED.expiry_enabled,
+		    member_joined_enabled = EXCLUDED.member_joined_enabled,
+		    updated_at = now()
+	`, roomID, identityID, enabled, newMedia, expiry, memberJoined); err != nil {
 		return NotificationSettings{}, fmt.Errorf("update notification settings: %w", err)
 	}
-	if err := scheduleExpiryNotifications(ctx, tx, roomID, identityID); err != nil {
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM telegram_notification_outbox
+		WHERE room_id = $1 AND sent_at IS NULL
+		  AND telegram_user_id = (SELECT telegram_user_id FROM identities WHERE id = $2)
+		  AND (
+		    NOT $3::boolean
+		    OR (event_type = 'media_uploaded' AND NOT $4::boolean)
+		    OR (event_type = 'room_expiry' AND NOT $5::boolean)
+		    OR (event_type = 'member_joined' AND NOT $6::boolean)
+		  )
+	`, roomID, identityID, enabled, newMedia, expiry, memberJoined); err != nil {
+		return NotificationSettings{}, fmt.Errorf("clear disabled notifications: %w", err)
+	}
+	if err := scheduleExpiryNotifications(ctx, tx, roomID); err != nil {
 		return NotificationSettings{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return NotificationSettings{}, err
 	}
-	return NotificationSettings{TelegramAvailable: telegramAvailable, TelegramEnabled: enabled}, nil
+	return NotificationSettings{TelegramAvailable: telegramAvailable, TelegramEnabled: enabled, NewMediaEnabled: newMedia, ExpiryEnabled: expiry, MemberJoinedEnabled: memberJoined, IsOwner: role == "owner"}, nil
 }
 
 func (s *Service) Update(ctx context.Context, identityID uuid.UUID, slug string, input UpdateInput) (Room, error) {
@@ -628,7 +691,7 @@ func (s *Service) Update(ctx context.Context, identityID uuid.UUID, slug string,
 		return Room{}, err
 	}
 	if input.Name != nil || input.LifetimeDays != nil {
-		if err := scheduleExpiryNotifications(ctx, tx, roomID, identityID); err != nil {
+		if err := scheduleExpiryNotifications(ctx, tx, roomID); err != nil {
 			return Room{}, err
 		}
 	}
@@ -661,6 +724,16 @@ func (s *Service) RemoveMember(ctx context.Context, ownerID uuid.UUID, slug stri
 	}
 	if role == "owner" {
 		return ErrCannotRemoveOwner
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM telegram_notification_outbox
+		WHERE room_id = $1 AND sent_at IS NULL
+		  AND telegram_user_id = (SELECT telegram_user_id FROM identities WHERE id = $2)
+	`, roomID, memberID); err != nil {
+		return fmt.Errorf("clear removed member notifications: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM room_notification_preferences WHERE room_id = $1 AND identity_id = $2`, roomID, memberID); err != nil {
+		return fmt.Errorf("clear removed member notification preference: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM room_members WHERE room_id = $1 AND identity_id = $2
@@ -748,12 +821,6 @@ func (s *Service) TransferOwnership(ctx context.Context, ownerID uuid.UUID, slug
 	}
 	if _, err := tx.Exec(ctx, `UPDATE rooms SET owner_identity_id = $2 WHERE id = $1`, roomID, memberID); err != nil {
 		return Room{}, fmt.Errorf("update room owner: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM telegram_notification_outbox WHERE room_id = $1 AND sent_at IS NULL`, roomID); err != nil {
-		return Room{}, fmt.Errorf("clear pending owner notifications: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM room_notification_preferences WHERE room_id = $1`, roomID); err != nil {
-		return Room{}, fmt.Errorf("reset owner notification preference: %w", err)
 	}
 	if err := recordEvent(ctx, tx, roomID, "ownership_transferred", ownerID, &memberID); err != nil {
 		return Room{}, err
@@ -885,7 +952,7 @@ func recordEvent(ctx context.Context, tx pgx.Tx, roomID uuid.UUID, eventType str
 	return nil
 }
 
-func scheduleExpiryNotifications(ctx context.Context, tx pgx.Tx, roomID, ownerID uuid.UUID) error {
+func scheduleExpiryNotifications(ctx context.Context, tx pgx.Tx, roomID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM telegram_notification_outbox
 		WHERE room_id = $1 AND event_type = 'room_expiry' AND sent_at IS NULL
@@ -903,17 +970,17 @@ func scheduleExpiryNotifications(ctx context.Context, tx pgx.Tx, roomID, ownerID
 			       'hours_remaining', reminder.hours,
 			       'expires_at', room.expires_at
 		       ),
-		       format('room-expiry:%s:%s:%s', room.id, extract(epoch FROM room.expires_at)::bigint, reminder.hours),
+		       format('room-expiry:%s:%s:%s:%s', room.id, identity.id, extract(epoch FROM room.expires_at)::bigint, reminder.hours),
 		       GREATEST(now(), room.expires_at - reminder.hours * interval '1 hour')
 		FROM rooms room
-		JOIN identities identity ON identity.id = $2 AND identity.telegram_user_id IS NOT NULL
-		JOIN room_notification_preferences preference
-		  ON preference.room_id = room.id AND preference.identity_id = identity.id AND preference.telegram_enabled
+		JOIN room_notification_preferences preference ON preference.room_id = room.id
+		JOIN identities identity ON identity.id = preference.identity_id AND identity.telegram_user_id IS NOT NULL
 		CROSS JOIN (VALUES (6), (1)) AS reminder(hours)
 		WHERE room.id = $1 AND room.status = 'active' AND room.expires_at > now()
+		  AND preference.telegram_enabled AND preference.expiry_enabled
 		  AND (reminder.hours = 1 OR room.expires_at > now() + interval '1 hour')
 		ON CONFLICT (dedupe_key) DO NOTHING
-	`, roomID, ownerID); err != nil {
+	`, roomID); err != nil {
 		return fmt.Errorf("schedule expiry notifications: %w", err)
 	}
 	return nil

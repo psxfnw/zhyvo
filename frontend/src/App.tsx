@@ -1516,13 +1516,13 @@ function RoomPage() {
   }, [room, settings])
 
   useEffect(() => {
-    if (!settings || room?.role !== 'owner') return
+    if (!settings || !room) return
     let active = true
     rooms.notifications(slug).then((result) => { if (active) setNotificationSettings(result) }).catch((cause) => {
       if (active) setSettingsError(errorMessage(cause))
     })
     return () => { active = false }
-  }, [room?.role, settings, slug])
+  }, [room, settings, slug])
 
   useEffect(() => {
     if (!membersOpen) return
@@ -1759,8 +1759,21 @@ function RoomPage() {
     setNotificationBusy(true)
     setSettingsError('')
     try {
-      const result = await rooms.updateNotifications(slug, !notificationSettings.telegram_enabled)
+      const result = await rooms.updateNotifications(slug, { telegram_enabled: !notificationSettings.telegram_enabled })
       setNotificationSettings(result)
+    } catch (cause) {
+      setSettingsError(errorMessage(cause))
+    } finally {
+      setNotificationBusy(false)
+    }
+  }
+
+  async function updateNotificationPreference(input: Partial<Pick<RoomNotificationSettings, 'new_media_enabled' | 'expiry_enabled' | 'member_joined_enabled'>>) {
+    if (!notificationSettings || notificationBusy) return
+    setNotificationBusy(true)
+    setSettingsError('')
+    try {
+      setNotificationSettings(await rooms.updateNotifications(slug, input))
     } catch (cause) {
       setSettingsError(errorMessage(cause))
     } finally {
@@ -2026,7 +2039,7 @@ function RoomPage() {
         <div className="room-topbar__actions">
           {gallery.length > 0 && <Link className="recap-button" to={`/r/${slug}/recap`}><Images size={17} /><span>Підсумок</span></Link>}
           <button className="share-button" onClick={() => setShareDialog(true)}>{copied ? <Check size={17} /> : <Share2 size={17} />}{copied ? 'Скопійовано' : 'Запросити'}</button>
-          {room.role === 'owner' && <button className="icon-button" onClick={() => setSettings(true)} aria-label="Налаштування кімнати"><Menu /></button>}
+          <button className="icon-button" onClick={() => setSettings(true)} aria-label="Налаштування кімнати"><Menu /></button>
         </div>
       </header>
 
@@ -2234,8 +2247,8 @@ function RoomPage() {
       {settings && (
         <div className="dialog-backdrop" role="presentation" onMouseDown={() => setSettings(false)}>
           <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
-            <header><h2 id="settings-title">Налаштування</h2><button ref={settingsCloseRef} className="icon-button" onClick={() => setSettings(false)} aria-label="Закрити"><X /></button></header>
-            <div className="settings-editor">
+            <header><h2 id="settings-title">{room.role === 'owner' ? 'Налаштування' : 'Налаштування кімнати'}</h2><button ref={settingsCloseRef} className="icon-button" onClick={() => setSettings(false)} aria-label="Закрити"><X /></button></header>
+            {room.role === 'owner' && <div className="settings-editor">
               <label className="field"><span>Назва кімнати</span><input value={settingsName} maxLength={120} onChange={(event) => setSettingsName(event.target.value)} /></label>
               <fieldset className="field"><legend>Доступ</legend><div className="segmented segmented--three">
                 {([['public', 'Без пароля'], ['pin', 'PIN'], ['password', 'Пароль']] as const).map(([value, label]) => <button type="button" className={settingsAccessMode === value ? 'is-active' : ''} onClick={() => { setSettingsAccessMode(value); setSettingsAccessDirty(value !== room.access_mode || settingsSecret.length > 0) }} key={value}>{label}</button>)}
@@ -2244,12 +2257,18 @@ function RoomPage() {
               <fieldset className="field lifetime-field"><legend>Автовидалення від створення</legend><div className="lifetime-value"><strong>{settingsLifetime}</strong><span>{settingsLifetime === 1 ? 'день' : 'дні'}</span></div><input className="lifetime-slider" type="range" min={Math.max(1, Math.round((new Date(room.expires_at).getTime() - new Date(room.created_at).getTime()) / (24 * 60 * 60 * 1000)))} max="3" step="1" value={settingsLifetime} disabled={settingsLifetime >= 3} onChange={(event) => setSettingsLifetime(Number(event.target.value))} style={{ '--slider-progress': `${(settingsLifetime - 1) * 50}%` } as CSSProperties} /><div className="slider-labels"><span>Поточний строк</span><span>Максимум 3 дні</span></div></fieldset>
               {settingsError && <p className="form-error" role="alert">{settingsError}</p>}
               <button className="primary-button" onClick={() => void saveRoomSettings()} disabled={settingsBusy}>{settingsBusy ? 'Зберігаємо…' : 'Зберегти зміни'}</button>
-            </div>
-            <div className="setting-row"><div><strong>Учасники кімнати</strong><span>Перегляньте всіх, хто приєднався за посиланням або QR-кодом.</span></div><button className="secondary-button primary-button--fit" onClick={() => void openMembers()}><Users size={17} /> Переглянути</button></div>
-            <div className="setting-row"><div><strong>Сповіщення в Telegram</strong><span>{notificationSettings?.telegram_available ? 'Нові учасники, завантаження та нагадування за 6 годин і за 1 годину до видалення.' : 'Підключіть Telegram, щоб бот міг повідомляти про активність і наближення автовидалення.'}</span></div>{notificationSettings?.telegram_available ? <button className={`switch ${notificationSettings.telegram_enabled ? 'on' : ''}`} role="switch" aria-checked={notificationSettings.telegram_enabled} disabled={notificationBusy} onClick={() => void toggleNotifications()}><span /></button> : <button className="secondary-button primary-button--fit" onClick={() => navigate(`/auth/telegram/link?returnTo=${encodeURIComponent(`/r/${slug}`)}`)}><Send size={17} /> Підключити</button>}</div>
-            <div className="setting-row"><div><strong>Приймати нових учасників</strong><span>Вимкніть, щоб нові люди не могли приєднатися за старим посиланням.</span></div><button className={`switch ${room.accepting_members ? 'on' : ''}`} role="switch" aria-checked={room.accepting_members} onClick={() => void toggleMembers()}><span /></button></div>
-            <div className="setting-row"><div><strong>Приймати нові файли</strong><span>Учасники бачитимуть галерею, але не зможуть завантажувати медіа.</span></div><button className={`switch ${room.accepting_uploads ? 'on' : ''}`} role="switch" aria-checked={room.accepting_uploads} onClick={() => void toggleUploads()}><span /></button></div>
-            <div className="setting-row setting-row--danger"><div><strong>Видалити кімнату</strong><span>Усі оригінали та дані буде видалено без можливості відновлення.</span></div><button className="danger-button" onClick={deleteRoom}><Trash2 size={17} /> Видалити</button></div>
+            </div>}
+            {room.role === 'owner' && <div className="setting-row"><div><strong>Учасники кімнати</strong><span>Перегляньте всіх, хто приєднався за посиланням або QR-кодом.</span></div><button className="secondary-button primary-button--fit" onClick={() => void openMembers()}><Users size={17} /> Переглянути</button></div>}
+            <div className="setting-row"><div><strong>Сповіщення в Telegram</strong><span>{notificationSettings?.telegram_available ? 'Отримуйте лише вибрані події цієї кімнати в чаті із Zhyvo.' : 'Підключіть Telegram, щоб бот міг повідомляти про активність і наближення автовидалення.'}</span></div>{notificationSettings?.telegram_available ? <button className={`switch ${notificationSettings.telegram_enabled ? 'on' : ''}`} role="switch" aria-label="Сповіщення в Telegram" aria-checked={notificationSettings.telegram_enabled} disabled={notificationBusy} onClick={() => void toggleNotifications()}><span /></button> : <button className="secondary-button primary-button--fit" onClick={() => navigate(`/auth/telegram/link?returnTo=${encodeURIComponent(`/r/${slug}`)}`)}><Send size={17} /> Підключити</button>}</div>
+            {notificationSettings?.telegram_available && notificationSettings.telegram_enabled && <div className="notification-options">
+              <div><span><strong>Нові файли</strong><small>Одне згруповане повідомлення замість серії.</small></span><button className={`switch ${notificationSettings.new_media_enabled ? 'on' : ''}`} role="switch" aria-label="Сповіщати про нові файли" aria-checked={notificationSettings.new_media_enabled} disabled={notificationBusy} onClick={() => void updateNotificationPreference({ new_media_enabled: !notificationSettings.new_media_enabled })}><span /></button></div>
+              <div><span><strong>Завершення кімнати</strong><small>Нагадування за 6 годин і за 1 годину.</small></span><button className={`switch ${notificationSettings.expiry_enabled ? 'on' : ''}`} role="switch" aria-label="Нагадувати про завершення кімнати" aria-checked={notificationSettings.expiry_enabled} disabled={notificationBusy} onClick={() => void updateNotificationPreference({ expiry_enabled: !notificationSettings.expiry_enabled })}><span /></button></div>
+              <div><span><strong>Нові учасники</strong><small>Коли до кімнати приєднається інша людина.</small></span><button className={`switch ${notificationSettings.member_joined_enabled ? 'on' : ''}`} role="switch" aria-label="Сповіщати про нових учасників" aria-checked={notificationSettings.member_joined_enabled} disabled={notificationBusy} onClick={() => void updateNotificationPreference({ member_joined_enabled: !notificationSettings.member_joined_enabled })}><span /></button></div>
+            </div>}
+            {room.role !== 'owner' && settingsError && <p className="form-error notification-error" role="alert">{settingsError}</p>}
+            {room.role === 'owner' && <div className="setting-row"><div><strong>Приймати нових учасників</strong><span>Вимкніть, щоб нові люди не могли приєднатися за старим посиланням.</span></div><button className={`switch ${room.accepting_members ? 'on' : ''}`} role="switch" aria-checked={room.accepting_members} onClick={() => void toggleMembers()}><span /></button></div>}
+            {room.role === 'owner' && <div className="setting-row"><div><strong>Приймати нові файли</strong><span>Учасники бачитимуть галерею, але не зможуть завантажувати медіа.</span></div><button className={`switch ${room.accepting_uploads ? 'on' : ''}`} role="switch" aria-checked={room.accepting_uploads} onClick={() => void toggleUploads()}><span /></button></div>}
+            {room.role === 'owner' && <div className="setting-row setting-row--danger"><div><strong>Видалити кімнату</strong><span>Усі оригінали та дані буде видалено без можливості відновлення.</span></div><button className="danger-button" onClick={deleteRoom}><Trash2 size={17} /> Видалити</button></div>}
           </section>
         </div>
       )}

@@ -56,6 +56,14 @@ await json(`/rooms/${slug}/join`, {
   headers: { Authorization: `Bearer ${guestAuth.access_token}` },
   body: JSON.stringify({}),
 })
+const guestNotificationSettings = await json(`/rooms/${slug}/notifications`, { headers: { Authorization: `Bearer ${guestAuth.access_token}` } })
+if (guestNotificationSettings.telegram_available || guestNotificationSettings.telegram_enabled || guestNotificationSettings.is_owner || guestNotificationSettings.member_joined_enabled) {
+  throw new Error(`Unexpected anonymous member notification defaults: ${JSON.stringify(guestNotificationSettings)}`)
+}
+const guestNotificationEnable = await fetch(`${baseURL}/api/v1/rooms/${slug}/notifications`, {
+  method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${guestAuth.access_token}` }, body: JSON.stringify({ telegram_enabled: true }),
+})
+if (guestNotificationEnable.status !== 422) throw new Error(`Anonymous member enabled Telegram notifications with status ${guestNotificationEnable.status}`)
 const listed = await json('/rooms', { headers: { Authorization: `Bearer ${auth.access_token}` } })
 if (!listed.rooms.some((room) => room.slug === slug && room.role === 'owner')) throw new Error('Created room is missing from my rooms')
 const roomMembers = await json(`/rooms/${slug}/members`, { headers: { Authorization: `Bearer ${auth.access_token}` } })
@@ -160,6 +168,25 @@ try {
   const portraitOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   if (portraitOverflow > 1) throw new Error(`375px layout has ${portraitOverflow}px horizontal overflow`)
   await page.screenshot({ path: resolve(artifacts, 'room-375.png'), fullPage: true })
+
+  const memberSettingsContext = await browser.newContext({ viewport: { width: 375, height: 812 }, locale: 'uk-UA' })
+  try {
+    await memberSettingsContext.addInitScript((storedSession) => localStorage.setItem('photodrop.session.v1', JSON.stringify(storedSession)), guestAuth)
+    const memberSettingsPage = await memberSettingsContext.newPage()
+    await memberSettingsPage.goto(`${baseURL}/r/${slug}`, { waitUntil: 'domcontentloaded' })
+    await memberSettingsPage.getByRole('button', { name: 'Налаштування кімнати' }).click()
+    const memberSettingsDialog = memberSettingsPage.getByRole('dialog', { name: 'Налаштування кімнати' })
+    await memberSettingsDialog.waitFor()
+    await memberSettingsDialog.getByRole('button', { name: 'Підключити' }).waitFor()
+    if (await memberSettingsDialog.getByText('Видалити кімнату').count()) throw new Error('Member settings exposed owner controls')
+    const memberSettingsTargets = await memberSettingsDialog.locator('button:visible, a:visible').evaluateAll((elements) => elements
+      .map((element) => ({ label: element.getAttribute('aria-label') || element.textContent?.trim(), ...element.getBoundingClientRect().toJSON() }))
+      .filter((box) => box.width < 44 || box.height < 44))
+    if (memberSettingsTargets.length) throw new Error(`Member notification touch targets below 44px: ${JSON.stringify(memberSettingsTargets)}`)
+    await memberSettingsPage.screenshot({ path: resolve(artifacts, 'member-notifications-375.png') })
+  } finally {
+    await memberSettingsContext.close()
+  }
 
   await page.getByRole('button', { name: 'Запросити' }).click()
   const shareDialog = page.getByRole('dialog', { name: 'Запросити друзів' })
@@ -508,7 +535,7 @@ try {
   cleanupAuth = guestAuth
 
   if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
-  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, problemReport: true, adminDeepLink: true, roomActivation: true, expiryWarning: true, managedInvites: true, viewerPermission: true, inviteRevocation: true, contentTypeValidation: true, recap: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
+  console.log(JSON.stringify({ slug, portraitOverflow, homeOverflow, overflows, touchTargets: true, onboarding: true, problemReport: true, adminDeepLink: true, roomActivation: true, expiryWarning: true, managedInvites: true, viewerPermission: true, inviteRevocation: true, participantNotifications: true, contentTypeValidation: true, recap: true, qr: true, telegramDeepLink: true, upload: true, uploadRecovery: true, checksumDeduplication: true, realtime: true, newMediaShelf: true, mediaCaptions: true, mediaDetails: true, galleryFilters: true, favorites: true, bestSort: true, roomCover: true, batchSelection: true, archive: true, viewer: true, myRooms: true, roomLifecycle: true, joiningClosed: true, members: true, moderation: true, ownershipTransfer: true, activity: true, telegramLightTheme: true }))
 } finally {
   await context.close()
   await browser.close()

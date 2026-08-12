@@ -603,6 +603,38 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
 
+  /rooms/{slug}/notifications:
+    parameters:
+      - $ref: '#/components/parameters/RoomSlug'
+    get:
+      operationId: getRoomNotificationSettings
+      tags: [Rooms]
+      summary: Get the current member's Telegram notification preferences
+      responses:
+        '200':
+          description: Personal room notification preferences
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomNotificationSettings'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateRoomNotificationSettings
+      tags: [Rooms]
+      summary: Update the current member's opt-in Telegram notification preferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateRoomNotificationSettings'}
+      responses:
+        '200':
+          description: Updated personal preferences
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomNotificationSettings'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+
   /rooms/{slug}/members:
     get:
       operationId: listRoomMembers
@@ -1262,6 +1294,27 @@ components:
         accepting_members: {type: boolean}
         lifetime_days: {type: integer, enum: [1, 2, 3]}
         access: {$ref: '#/components/schemas/RoomAccess'}
+
+    RoomNotificationSettings:
+      type: object
+      required: [telegram_available, telegram_enabled, new_media_enabled, expiry_enabled, member_joined_enabled, is_owner]
+      properties:
+        telegram_available: {type: boolean}
+        telegram_enabled: {type: boolean}
+        new_media_enabled: {type: boolean}
+        expiry_enabled: {type: boolean}
+        member_joined_enabled: {type: boolean}
+        is_owner: {type: boolean}
+
+    UpdateRoomNotificationSettings:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        telegram_enabled: {type: boolean}
+        new_media_enabled: {type: boolean}
+        expiry_enabled: {type: boolean}
+        member_joined_enabled: {type: boolean}
 
     Room:
       type: object

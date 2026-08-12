@@ -163,6 +163,10 @@ export interface RoomArchive {
 export interface RoomNotificationSettings {
   telegram_available: boolean
   telegram_enabled: boolean
+  new_media_enabled: boolean
+  expiry_enabled: boolean
+  member_joined_enabled: boolean
+  is_owner: boolean
 }
 
 export interface RoomRecap {

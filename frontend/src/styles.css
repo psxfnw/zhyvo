@@ -790,6 +790,13 @@ a:focus-visible {
 .setting-row strong { font-size: 15px; }
 .setting-row span { color: var(--muted); font-size: 13px; line-height: 1.45; }
 .setting-row--danger { align-items: end; }
+.notification-options { margin: 0 18px 18px; padding: 5px 16px; border: 1px solid rgb(0 113 227 / 10%); border-radius: 20px; background: linear-gradient(145deg, rgb(0 113 227 / 6%), rgb(88 86 242 / 5%)); }
+.notification-options > div { min-height: 72px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; border-bottom: 1px solid rgb(118 118 128 / 11%); }
+.notification-options > div:last-child { border-bottom: 0; }
+.notification-options > div > span { display: grid; gap: 4px; }
+.notification-options strong { font-size: 13px; }
+.notification-options small { color: var(--muted); font-size: 11px; line-height: 1.35; }
+.notification-error { margin: 0 18px 18px; }
 .switch { width: 58px; height: 44px; padding: 3px 5px; display: flex; align-items: center; border: 0; border-radius: var(--radius-pill); background: #d1d1d6; box-shadow: inset 0 1px 3px rgb(0 0 0 / 10%); cursor: pointer; }
 .switch span { width: 28px; height: 28px; display: block; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgb(0 0 0 / 22%); transition: transform 260ms var(--ease-spring); }
 .switch.on { background: #34c759; }

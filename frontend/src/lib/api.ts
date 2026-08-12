@@ -287,7 +287,7 @@ export const rooms = {
   update: (slug: string, input: Partial<{ name: string; accepting_uploads: boolean; accepting_members: boolean; access: { mode: AccessMode; secret: string }; lifetime_days: number }>) =>
     api<{ room: Room }>(`/rooms/${slug}`, { method: 'PATCH', body: JSON.stringify(input) }),
   notifications: (slug: string) => api<RoomNotificationSettings>(`/rooms/${slug}/notifications`),
-  updateNotifications: (slug: string, telegramEnabled: boolean) => api<RoomNotificationSettings>(`/rooms/${slug}/notifications`, { method: 'PATCH', body: JSON.stringify({ telegram_enabled: telegramEnabled }) }),
+  updateNotifications: (slug: string, input: Partial<Pick<RoomNotificationSettings, 'telegram_enabled' | 'new_media_enabled' | 'expiry_enabled' | 'member_joined_enabled'>>) => api<RoomNotificationSettings>(`/rooms/${slug}/notifications`, { method: 'PATCH', body: JSON.stringify(input) }),
   remove: (slug: string) => api<void>(`/rooms/${slug}`, { method: 'DELETE' }),
 }
 

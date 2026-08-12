@@ -41,7 +41,10 @@ type transferOwnershipRequest struct {
 }
 
 type updateNotificationsRequest struct {
-	TelegramEnabled bool `json:"telegram_enabled"`
+	TelegramEnabled     *bool `json:"telegram_enabled"`
+	NewMediaEnabled     *bool `json:"new_media_enabled"`
+	ExpiryEnabled       *bool `json:"expiry_enabled"`
+	MemberJoinedEnabled *bool `json:"member_joined_enabled"`
 }
 
 type createInviteRequest struct {
@@ -385,7 +388,10 @@ func (handler roomHandler) updateNotifications(response http.ResponseWriter, req
 		writeAPIError(response, request, http.StatusBadRequest, "INVALID_JSON", "Request body is invalid")
 		return
 	}
-	result, err := handler.service.UpdateNotifications(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), input.TelegramEnabled)
+	result, err := handler.service.UpdateNotifications(request.Context(), principal.IdentityID, chi.URLParam(request, "slug"), room.NotificationUpdate{
+		TelegramEnabled: input.TelegramEnabled, NewMediaEnabled: input.NewMediaEnabled,
+		ExpiryEnabled: input.ExpiryEnabled, MemberJoinedEnabled: input.MemberJoinedEnabled,
+	})
 	if err != nil {
 		handler.writeError(response, request, err)
 		return

@@ -32,7 +32,7 @@ Every non-empty room has a compact end-of-event page with total files, participa
 
 Status: implemented in preview.
 
-Every room member receives an in-room warning during the final six hours, with the exact deletion time and device-appropriate save action. Owners who opt into the existing Telegram notification setting receive durable reminders at six hours and one hour before deletion. Reminder rows use deadline-scoped deduplication, are rescheduled when the room name or lifetime changes, are removed when notifications are disabled, and never send after the room expires. Transferring ownership clears pending owner notifications and requires the new owner to opt in. A realtime-trigger fix also ensures cascaded membership deletion cannot block permanent TTL cleanup.
+Every room member receives an in-room warning during the final six hours, with the exact deletion time and device-appropriate save action. Participants who opt into expiry notifications receive durable Telegram reminders at six hours and one hour before deletion. Reminder rows use recipient- and deadline-scoped deduplication, are rescheduled when the room name or lifetime changes, are removed when notifications are disabled, and never send after the room expires. Preferences follow the person through an ownership transfer, while removing a member clears their pending deliveries. A realtime-trigger fix also ensures cascaded membership deletion cannot block permanent TTL cleanup.
 
 ## New-room activation
 
@@ -123,7 +123,7 @@ This flow avoids creating a persistent `Telegram Widgets` browser session, makes
 
 Status: implemented in preview.
 
-Room owners with a linked Telegram identity can opt in per room. Member joins are delivered immediately; file uploads are grouped into a short per-uploader digest. Delivery uses a PostgreSQL transactional outbox processed by the existing worker with bounded retries, so notification failures never roll back joins or media uploads.
+Every room participant with a linked Telegram identity can opt in per room and independently choose new-media digests, six-hour/one-hour expiry reminders, and member-join events. New media is grouped by uploader and recipient into a short digest, the actor never receives a notification about their own action, and removed members lose both their preference and pending delivery. Existing owner subscriptions retain their previous behavior. Delivery uses a PostgreSQL transactional outbox with recipient-aware deduplication and bounded retries, so notification failures never roll back joins or media uploads.
 
 ## Mobile media compatibility
 

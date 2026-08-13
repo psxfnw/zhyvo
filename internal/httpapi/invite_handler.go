@@ -86,7 +86,7 @@ func (handler inviteHandler) show(response http.ResponseWriter, request *http.Re
 		WebURL       string
 	}{preview.Name, origin, origin + request.URL.Path, origin + webPath}
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
-	response.Header().Set("Cache-Control", "public, max-age=60")
+	response.Header().Set("Cache-Control", "no-cache, max-age=0, must-revalidate")
 	response.Header().Set("X-Robots-Tag", "noindex, nofollow")
 	_ = invitePage.Execute(response, data)
 }

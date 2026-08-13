@@ -145,7 +145,9 @@ export function roomInviteLink(slug: string) {
 }
 
 export function managedInviteLink(token: string) {
-  return `${window.location.origin}/invite/${token}`
+  // Telegram caches link-preview HTML aggressively. Version the human-facing
+  // URL so previously shared pages cannot keep reopening an obsolete flow.
+  return `${window.location.origin}/invite/${token}?join=v2`
 }
 
 export function managedBrowserInviteLink(token: string) {

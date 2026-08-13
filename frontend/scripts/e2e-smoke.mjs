@@ -216,9 +216,10 @@ try {
   await shareDialog.getByRole('button', { name: 'Надіслати в Telegram' }).waitFor()
   const browserInviteURL = await shareDialog.getByRole('link', { name: 'Відкрити кімнату у браузері' }).getAttribute('href')
   if (browserInviteURL !== `${baseURL}/i/${inviteToken}`) throw new Error(`Unexpected browser invite URL: ${browserInviteURL}`)
-  const previewResponse = await fetch(`${baseURL}/invite/${inviteToken}`, { redirect: 'manual' })
+  const sharedInviteURL = `${baseURL}/invite/${inviteToken}?join=v2`
+  const previewResponse = await fetch(sharedInviteURL, { redirect: 'manual' })
   if (previewResponse.status !== 303 || previewResponse.headers.get('location') !== `/i/${inviteToken}`) throw new Error(`Human invite URL did not redirect to the app: ${previewResponse.status} ${previewResponse.headers.get('location')}`)
-  const crawlerPreview = await fetch(`${baseURL}/invite/${inviteToken}`, { headers: { 'User-Agent': 'TelegramBot (like TwitterBot)' } })
+  const crawlerPreview = await fetch(sharedInviteURL, { headers: { 'User-Agent': 'TelegramBot (like TwitterBot)' } })
   const crawlerHTML = await crawlerPreview.text()
   if (!crawlerPreview.ok || !crawlerHTML.includes('og:image') || !crawlerHTML.includes(`/i/${inviteToken}`)) throw new Error('Telegram crawler did not receive the invitation preview')
   await page.screenshot({ path: resolve(artifacts, 'share-375.png'), fullPage: true })
@@ -228,7 +229,7 @@ try {
   try {
     await managedLinkContext.addInitScript((storedSession) => localStorage.setItem('photodrop.session.v1', JSON.stringify(storedSession)), managedLinkGuestAuth)
     const managedLinkPage = await managedLinkContext.newPage()
-    await managedLinkPage.goto(`${baseURL}/invite/${inviteToken}`, { waitUntil: 'domcontentloaded' })
+    await managedLinkPage.goto(sharedInviteURL, { waitUntil: 'domcontentloaded' })
     await managedLinkPage.getByRole('heading', { name: 'Mobile UX Check' }).waitFor()
     await managedLinkPage.waitForURL(new RegExp(`/r/${slug}$`))
     if (new URL(managedLinkPage.url()).pathname !== `/r/${slug}`) throw new Error(`Managed share link did not join the room: ${managedLinkPage.url()}`)
